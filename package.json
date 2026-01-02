@@ -1,6 +1,6 @@
 {
   "name": "invoket",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "TypeScript task runner for Bun - uses type annotations to parse CLI arguments",
   "bin": {
