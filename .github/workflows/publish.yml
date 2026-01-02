@@ -1,13 +1,15 @@
-name: Publish
+name: Publish to npm
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -15,13 +17,13 @@ jobs:
         with:
           bun-version: latest
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
       - run: bun install
 
       - run: bun test
 
       - name: Publish to npm
-        run: |
-          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
-          npm publish --access public
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
