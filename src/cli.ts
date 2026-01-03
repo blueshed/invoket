@@ -483,6 +483,11 @@ async function main() {
   // Validate and coerce arguments
   const coercedArgs: unknown[] = [];
 
+  // If no param info (imported namespace), pass all args as strings
+  if (meta.params.length === 0 && taskArgs.length > 0) {
+    coercedArgs.push(...taskArgs);
+  }
+
   for (let i = 0; i < meta.params.length; i++) {
     const param = meta.params[i];
 
