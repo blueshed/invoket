@@ -152,7 +152,7 @@ function parseParams(paramsStr: string | undefined): ParamMeta[] {
   return params;
 }
 
-// Discover all tasks including namespaced ones
+// Discover all tasks including namespaced ones (source parsing only)
 function discoverAllTasks(source: string): DiscoveredTasks {
   const root = extractMethodsFromClass(source, "Tasks");
   const namespaced = new Map<string, Map<string, TaskMeta>>();
@@ -175,6 +175,48 @@ function discoverAllTasks(source: string): DiscoveredTasks {
   }
 
   return { root, namespaced, classDoc };
+}
+
+// Discover methods from runtime instance (for imported namespaces)
+function discoverRuntimeNamespaces(
+  instance: any,
+  discovered: DiscoveredTasks,
+): void {
+  // Find namespace properties on the instance
+  for (const propName of Object.getOwnPropertyNames(instance)) {
+    // Skip private, already discovered, or non-objects
+    if (propName.startsWith("_")) continue;
+    if (discovered.namespaced.has(propName)) continue;
+
+    const prop = instance[propName];
+    if (!prop || typeof prop !== "object" || Array.isArray(prop)) continue;
+
+    // Discover methods from this namespace at runtime
+    const methods = new Map<string, TaskMeta>();
+    let proto = Object.getPrototypeOf(prop);
+
+    while (proto && proto !== Object.prototype) {
+      for (const methodName of Object.getOwnPropertyNames(proto)) {
+        if (
+          methodName === "constructor" ||
+          methodName.startsWith("_") ||
+          typeof prop[methodName] !== "function"
+        ) {
+          continue;
+        }
+
+        // No type info for imported methods - treat args as strings
+        if (!methods.has(methodName)) {
+          methods.set(methodName, { description: "", params: [] });
+        }
+      }
+      proto = Object.getPrototypeOf(proto);
+    }
+
+    if (methods.size > 0) {
+      discovered.namespaced.set(propName, methods);
+    }
+  }
 }
 
 // Parse TypeScript source to extract method signatures and types (legacy, for compatibility)
@@ -285,13 +327,16 @@ async function main() {
   const tasksPath = Bun.resolveSync("./tasks.ts", process.cwd());
   const source = await Bun.file(tasksPath).text();
 
-  // Discover all tasks including namespaced
-  const discovered = discoverAllTasks(source);
-
   // Import and instantiate Tasks class
   const { Tasks } = await import(tasksPath);
   const instance = new Tasks();
   const context = new Context();
+
+  // Discover all tasks including namespaced
+  const discovered = discoverAllTasks(source);
+
+  // Also discover imported namespaces from runtime
+  discoverRuntimeNamespaces(instance, discovered);
 
   // No args or just help flag -> show general help
   if (
