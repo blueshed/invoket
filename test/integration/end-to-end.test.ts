@@ -434,7 +434,7 @@ export class Tasks {
       // Don't create tasks.ts
       const result = await runCLI("build");
       expect(result.code).toBe(1);
-      expect(result.stderr).toContain("tasks.ts");
+      expect(result.stdout).toContain("No tasks.ts found");
     });
 
     test("should handle invalid tasks.ts syntax", async () => {

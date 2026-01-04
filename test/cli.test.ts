@@ -802,6 +802,753 @@ describe("rest parameters (spec section 3)", () => {
 });
 
 // =============================================================================
+// FLAG PARSING TESTS
+// =============================================================================
+
+// Interface for parsed CLI arguments
+interface ParsedArgs {
+  positional: string[];
+  flags: Map<string, string | boolean>;
+}
+
+// Parse CLI arguments into flags and positional args
+function parseCliArgs(args: string[]): ParsedArgs {
+  const positional: string[] = [];
+  const flags = new Map<string, string | boolean>();
+  let stopFlagParsing = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (stopFlagParsing) {
+      positional.push(arg);
+      continue;
+    }
+
+    if (arg === "--") {
+      stopFlagParsing = true;
+      continue;
+    }
+
+    // --flag=value
+    if (arg.startsWith("--") && arg.includes("=")) {
+      const eqIdx = arg.indexOf("=");
+      const name = arg.slice(2, eqIdx);
+      const value = arg.slice(eqIdx + 1);
+      flags.set(name, value);
+      continue;
+    }
+
+    // --no-flag (boolean negation)
+    if (arg.startsWith("--no-")) {
+      const name = arg.slice(5);
+      flags.set(name, false);
+      continue;
+    }
+
+    // --flag (may be boolean or need next arg)
+    if (arg.startsWith("--")) {
+      const name = arg.slice(2);
+      const nextArg = args[i + 1];
+
+      // If next arg exists and doesn't look like a flag, use it as value
+      if (nextArg !== undefined && !nextArg.startsWith("-")) {
+        flags.set(name, nextArg);
+        i++; // Skip next arg
+      } else {
+        flags.set(name, true); // Boolean flag
+      }
+      continue;
+    }
+
+    // -f=value (short with equals)
+    if (arg.startsWith("-") && arg.length > 2 && arg.includes("=")) {
+      const eqIdx = arg.indexOf("=");
+      const name = arg.slice(1, eqIdx);
+      const value = arg.slice(eqIdx + 1);
+      flags.set(name, value);
+      continue;
+    }
+
+    // -f value or -f (boolean)
+    if (arg.startsWith("-") && arg.length === 2) {
+      const name = arg.slice(1);
+      const nextArg = args[i + 1];
+
+      if (nextArg !== undefined && !nextArg.startsWith("-")) {
+        flags.set(name, nextArg);
+        i++;
+      } else {
+        flags.set(name, true);
+      }
+      continue;
+    }
+
+    // Positional argument
+    positional.push(arg);
+  }
+
+  return { positional, flags };
+}
+
+// Flag metadata for a parameter
+interface FlagMeta {
+  long: string; // e.g., "--name"
+  short?: string; // e.g., "-n"
+  aliases?: string[]; // e.g., ["--environment"]
+}
+
+// Extended ParamMeta with flag support
+interface ExtendedParamMeta {
+  name: string;
+  type: ParamType;
+  required: boolean;
+  isRest: boolean;
+  flag?: FlagMeta;
+}
+
+// Extract @flag annotations from JSDoc
+function extractFlagAnnotations(
+  jsdoc: string,
+): Map<string, { short?: string; aliases?: string[] }> {
+  const flags = new Map<string, { short?: string; aliases?: string[] }>();
+
+  // Match @flag paramName -s --alias1 --alias2
+  const flagPattern = /@flag\s+(\w+)\s+([^\n@]*)/g;
+  let match;
+
+  while ((match = flagPattern.exec(jsdoc)) !== null) {
+    const [, paramName, flagsStr] = match;
+    const parts = flagsStr.trim().split(/\s+/);
+
+    let short: string | undefined;
+    const aliases: string[] = [];
+
+    for (const part of parts) {
+      if (part.startsWith("--")) {
+        aliases.push(part);
+      } else if (part.startsWith("-") && part.length === 2) {
+        short = part;
+      }
+    }
+
+    flags.set(paramName, {
+      short: short,
+      aliases: aliases.length > 0 ? aliases : undefined,
+    });
+  }
+
+  return flags;
+}
+
+// Parse params with flag metadata
+function parseParamsWithFlags(
+  paramsStr: string | undefined,
+  jsdoc: string,
+): ExtendedParamMeta[] {
+  const params: ExtendedParamMeta[] = [];
+  if (!paramsStr) return params;
+
+  const flagAnnotations = extractFlagAnnotations(jsdoc);
+
+  // Check for rest parameter first: ...name: type
+  const restMatch = paramsStr.match(/\.\.\.(\w+)\s*:\s*(\w+\[\]|\w+)/);
+  if (restMatch) {
+    const [, name, rawType] = restMatch;
+    params.push({
+      name,
+      type: rawType.endsWith("[]") ? "array" : "string",
+      required: false,
+      isRest: true,
+      // Rest params don't get flags
+    });
+    return params;
+  }
+
+  const paramPattern =
+    /(\w+)\s*:\s*(\w+\[\]|Record<[^>]+>|\{[^}]*\}|string|number|boolean|\w+)(?:\s*=\s*[^,)]+)?/g;
+  let paramMatch;
+
+  while ((paramMatch = paramPattern.exec(paramsStr)) !== null) {
+    const [fullMatch, name, rawType] = paramMatch;
+    const hasDefault = fullMatch.includes("=");
+
+    let type: ParamType;
+    if (rawType === "string") {
+      type = "string";
+    } else if (rawType === "number") {
+      type = "number";
+    } else if (rawType === "boolean") {
+      type = "boolean";
+    } else if (rawType.endsWith("[]")) {
+      type = "array";
+    } else {
+      type = "object";
+    }
+
+    // Build flag metadata
+    const annotation = flagAnnotations.get(name);
+    const flag: FlagMeta = {
+      long: `--${name}`,
+      short: annotation?.short,
+      aliases: annotation?.aliases,
+    };
+
+    params.push({
+      name,
+      type,
+      required: !hasDefault,
+      isRest: false,
+      flag,
+    });
+  }
+
+  return params;
+}
+
+describe("extractFlagAnnotations", () => {
+  test("extracts @flag with short flag", () => {
+    const jsdoc = `
+      Deploy the app
+      @flag env -e
+    `;
+    const flags = extractFlagAnnotations(jsdoc);
+    expect(flags.get("env")).toEqual({ short: "-e", aliases: undefined });
+  });
+
+  test("extracts @flag with alias", () => {
+    const jsdoc = `
+      Deploy
+      @flag env -e --environment
+    `;
+    const flags = extractFlagAnnotations(jsdoc);
+    expect(flags.get("env")).toEqual({
+      short: "-e",
+      aliases: ["--environment"],
+    });
+  });
+
+  test("extracts @flag with multiple aliases", () => {
+    const jsdoc = `
+      Deploy
+      @flag env -e --environment --environ
+    `;
+    const flags = extractFlagAnnotations(jsdoc);
+    expect(flags.get("env")).toEqual({
+      short: "-e",
+      aliases: ["--environment", "--environ"],
+    });
+  });
+
+  test("extracts @flag with only short flag", () => {
+    const jsdoc = `@flag force -f`;
+    const flags = extractFlagAnnotations(jsdoc);
+    expect(flags.get("force")).toEqual({ short: "-f", aliases: undefined });
+  });
+
+  test("extracts @flag with only alias", () => {
+    const jsdoc = `@flag env --environment`;
+    const flags = extractFlagAnnotations(jsdoc);
+    expect(flags.get("env")).toEqual({
+      short: undefined,
+      aliases: ["--environment"],
+    });
+  });
+
+  test("extracts multiple @flag annotations", () => {
+    const jsdoc = `
+      Deploy the app
+      @flag env -e --environment
+      @flag force -f
+      @flag verbose -v
+    `;
+    const flags = extractFlagAnnotations(jsdoc);
+    expect(flags.get("env")).toEqual({
+      short: "-e",
+      aliases: ["--environment"],
+    });
+    expect(flags.get("force")).toEqual({ short: "-f", aliases: undefined });
+    expect(flags.get("verbose")).toEqual({ short: "-v", aliases: undefined });
+  });
+
+  test("returns empty map when no @flag annotations", () => {
+    const jsdoc = `Just a description`;
+    const flags = extractFlagAnnotations(jsdoc);
+    expect(flags.size).toBe(0);
+  });
+});
+
+describe("parseParamsWithFlags", () => {
+  test("auto-generates long flag from param name", () => {
+    const params = parseParamsWithFlags("env: string", "Deploy app");
+    expect(params[0].flag).toEqual({ long: "--env" });
+  });
+
+  test("includes short flag from @flag annotation", () => {
+    const jsdoc = `
+      Deploy app
+      @flag env -e
+    `;
+    const params = parseParamsWithFlags("env: string", jsdoc);
+    expect(params[0].flag).toEqual({ long: "--env", short: "-e" });
+  });
+
+  test("includes aliases from @flag annotation", () => {
+    const jsdoc = `
+      Deploy
+      @flag env -e --environment
+    `;
+    const params = parseParamsWithFlags("env: string", jsdoc);
+    expect(params[0].flag).toEqual({
+      long: "--env",
+      short: "-e",
+      aliases: ["--environment"],
+    });
+  });
+
+  test("handles multiple params with flags", () => {
+    const jsdoc = `
+      Deploy
+      @flag env -e
+      @flag force -f
+    `;
+    const params = parseParamsWithFlags(
+      "env: string, force: boolean = false",
+      jsdoc,
+    );
+    expect(params[0].flag).toEqual({ long: "--env", short: "-e" });
+    expect(params[1].flag).toEqual({ long: "--force", short: "-f" });
+  });
+
+  test("rest parameters do not get flags", () => {
+    const params = parseParamsWithFlags("...packages: string[]", "Install");
+    expect(params[0].isRest).toBe(true);
+    expect(params[0].flag).toBeUndefined();
+  });
+
+  test("params without @flag annotation still get auto long flag", () => {
+    const jsdoc = `
+      Deploy
+      @flag env -e
+    `;
+    const params = parseParamsWithFlags("env: string, count: number", jsdoc);
+    expect(params[0].flag).toEqual({ long: "--env", short: "-e" });
+    expect(params[1].flag).toEqual({ long: "--count" });
+  });
+
+  test("preserves other param metadata", () => {
+    const params = parseParamsWithFlags(
+      "name: string, count: number = 1",
+      "Hello",
+    );
+    expect(params[0]).toMatchObject({
+      name: "name",
+      type: "string",
+      required: true,
+      isRest: false,
+    });
+    expect(params[1]).toMatchObject({
+      name: "count",
+      type: "number",
+      required: false,
+      isRest: false,
+    });
+  });
+});
+
+// Resolve arguments from parsed CLI args using param metadata
+function resolveArgs(
+  params: ExtendedParamMeta[],
+  parsed: ParsedArgs,
+  coerceFn: (value: string, type: ParamType) => unknown,
+): unknown[] {
+  const result: unknown[] = [];
+  const usedPositional = new Set<number>();
+
+  for (const param of params) {
+    // Handle rest parameters - collect all remaining positional args
+    if (param.isRest) {
+      const remaining = parsed.positional.filter(
+        (_, i) => !usedPositional.has(i),
+      );
+      result.push(...remaining);
+      break;
+    }
+
+    let value: string | boolean | undefined;
+
+    // Try to get value from flags first
+    if (param.flag) {
+      // Check long flag (without --)
+      const longName = param.flag.long.slice(2);
+      if (parsed.flags.has(longName)) {
+        value = parsed.flags.get(longName);
+      }
+      // Check short flag (without -)
+      else if (param.flag.short) {
+        const shortName = param.flag.short.slice(1);
+        if (parsed.flags.has(shortName)) {
+          value = parsed.flags.get(shortName);
+        }
+      }
+      // Check aliases
+      if (value === undefined && param.flag.aliases) {
+        for (const alias of param.flag.aliases) {
+          const aliasName = alias.slice(2);
+          if (parsed.flags.has(aliasName)) {
+            value = parsed.flags.get(aliasName);
+            break;
+          }
+        }
+      }
+    }
+
+    // Fall back to positional if no flag found
+    if (value === undefined) {
+      for (let i = 0; i < parsed.positional.length; i++) {
+        if (!usedPositional.has(i)) {
+          value = parsed.positional[i];
+          usedPositional.add(i);
+          break;
+        }
+      }
+    }
+
+    // Handle missing values
+    if (value === undefined) {
+      if (param.required) {
+        throw new Error(
+          `Missing required argument: <${param.name}> (${param.type})`,
+        );
+      }
+      break; // Optional param not provided, stop processing
+    }
+
+    // Coerce and add to result
+    // Boolean flags that are already boolean don't need coercion
+    if (typeof value === "boolean" && param.type === "boolean") {
+      result.push(value);
+    } else {
+      result.push(coerceFn(String(value), param.type));
+    }
+  }
+
+  return result;
+}
+
+describe("resolveArgs", () => {
+  // Helper to create params with flags
+  const makeParams = (
+    defs: Array<{
+      name: string;
+      type: ParamType;
+      required?: boolean;
+      isRest?: boolean;
+      short?: string;
+      aliases?: string[];
+    }>,
+  ): ExtendedParamMeta[] =>
+    defs.map((d) => ({
+      name: d.name,
+      type: d.type,
+      required: d.required ?? true,
+      isRest: d.isRest ?? false,
+      flag: d.isRest
+        ? undefined
+        : {
+            long: `--${d.name}`,
+            short: d.short,
+            aliases: d.aliases,
+          },
+    }));
+
+  test("resolves from positional args (backwards compat)", () => {
+    const params = makeParams([
+      { name: "name", type: "string" },
+      { name: "count", type: "number" },
+    ]);
+    const parsed = { positional: ["World", "3"], flags: new Map() };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual(["World", 3]);
+  });
+
+  test("resolves from long flags", () => {
+    const params = makeParams([
+      { name: "name", type: "string" },
+      { name: "count", type: "number" },
+    ]);
+    const parsed = {
+      positional: [],
+      flags: new Map<string, string | boolean>([
+        ["name", "World"],
+        ["count", "3"],
+      ]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual(["World", 3]);
+  });
+
+  test("resolves from short flags", () => {
+    const params = makeParams([
+      { name: "name", type: "string", short: "-n" },
+      { name: "count", type: "number", short: "-c" },
+    ]);
+    const parsed = {
+      positional: [],
+      flags: new Map<string, string | boolean>([
+        ["n", "World"],
+        ["c", "3"],
+      ]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual(["World", 3]);
+  });
+
+  test("resolves from aliases", () => {
+    const params = makeParams([
+      { name: "env", type: "string", aliases: ["--environment"] },
+    ]);
+    const parsed = {
+      positional: [],
+      flags: new Map<string, string | boolean>([["environment", "prod"]]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual(["prod"]);
+  });
+
+  test("mixes positional and flags", () => {
+    const params = makeParams([
+      { name: "name", type: "string" },
+      { name: "count", type: "number" },
+    ]);
+    const parsed = {
+      positional: ["World"],
+      flags: new Map<string, string | boolean>([["count", "3"]]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual(["World", 3]);
+  });
+
+  test("flags take precedence over positional", () => {
+    const params = makeParams([{ name: "name", type: "string" }]);
+    const parsed = {
+      positional: ["Positional"],
+      flags: new Map<string, string | boolean>([["name", "FromFlag"]]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual(["FromFlag"]);
+  });
+
+  test("handles boolean flags as true", () => {
+    const params = makeParams([
+      { name: "force", type: "boolean", required: false },
+    ]);
+    const parsed = {
+      positional: [],
+      flags: new Map<string, string | boolean>([["force", true]]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual([true]);
+  });
+
+  test("handles --no-flag as false", () => {
+    const params = makeParams([
+      { name: "force", type: "boolean", required: false },
+    ]);
+    const parsed = {
+      positional: [],
+      flags: new Map<string, string | boolean>([["force", false]]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual([false]);
+  });
+
+  test("handles boolean flag with string value", () => {
+    const params = makeParams([
+      { name: "force", type: "boolean", required: false },
+    ]);
+    const parsed = {
+      positional: [],
+      flags: new Map<string, string | boolean>([["force", "true"]]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual([true]);
+  });
+
+  test("throws on missing required arg", () => {
+    const params = makeParams([{ name: "name", type: "string" }]);
+    const parsed = { positional: [], flags: new Map() };
+    expect(() => resolveArgs(params, parsed, coerceArg)).toThrow(
+      "Missing required argument: <name>",
+    );
+  });
+
+  test("handles optional params not provided", () => {
+    const params = makeParams([
+      { name: "name", type: "string" },
+      { name: "count", type: "number", required: false },
+    ]);
+    const parsed = {
+      positional: ["World"],
+      flags: new Map(),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual(["World"]);
+  });
+
+  test("handles rest parameters", () => {
+    const params: ExtendedParamMeta[] = [
+      {
+        name: "packages",
+        type: "array",
+        required: false,
+        isRest: true,
+      },
+    ];
+    const parsed = {
+      positional: ["react", "vue", "angular"],
+      flags: new Map(),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual(["react", "vue", "angular"]);
+  });
+
+  test("handles rest parameters with preceding params", () => {
+    const params: ExtendedParamMeta[] = [
+      {
+        name: "registry",
+        type: "string",
+        required: false,
+        isRest: false,
+        flag: { long: "--registry" },
+      },
+      {
+        name: "packages",
+        type: "array",
+        required: false,
+        isRest: true,
+      },
+    ];
+    const parsed = {
+      positional: ["react", "vue"],
+      flags: new Map<string, string | boolean>([["registry", "npm"]]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    // registry from flag, packages from positional
+    expect(result).toEqual(["npm", "react", "vue"]);
+  });
+
+  test("flags anywhere in positional list work", () => {
+    const params = makeParams([
+      { name: "name", type: "string" },
+      { name: "count", type: "number" },
+    ]);
+    // Simulating: invt hello --count=2 World
+    // parseCliArgs would give us positional: ["World"], flags: {count: "2"}
+    const parsed = {
+      positional: ["World"],
+      flags: new Map<string, string | boolean>([["count", "2"]]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual(["World", 2]);
+  });
+});
+
+describe("parseCliArgs", () => {
+  test("parses --flag=value syntax", () => {
+    const result = parseCliArgs(["--name=World"]);
+    expect(result.positional).toEqual([]);
+    expect(result.flags.get("name")).toBe("World");
+  });
+
+  test("parses --flag value syntax", () => {
+    const result = parseCliArgs(["--name", "World"]);
+    expect(result.positional).toEqual([]);
+    expect(result.flags.get("name")).toBe("World");
+  });
+
+  test("parses short flag -n value", () => {
+    const result = parseCliArgs(["-n", "World"]);
+    expect(result.positional).toEqual([]);
+    expect(result.flags.get("n")).toBe("World");
+  });
+
+  test("parses short flag -n=value", () => {
+    const result = parseCliArgs(["-n=World"]);
+    expect(result.positional).toEqual([]);
+    expect(result.flags.get("n")).toBe("World");
+  });
+
+  test("parses boolean flag without value", () => {
+    const result = parseCliArgs(["--verbose"]);
+    expect(result.positional).toEqual([]);
+    expect(result.flags.get("verbose")).toBe(true);
+  });
+
+  test("parses short boolean flag", () => {
+    const result = parseCliArgs(["-v"]);
+    expect(result.positional).toEqual([]);
+    expect(result.flags.get("v")).toBe(true);
+  });
+
+  test("parses --no-flag as false", () => {
+    const result = parseCliArgs(["--no-verbose"]);
+    expect(result.positional).toEqual([]);
+    expect(result.flags.get("verbose")).toBe(false);
+  });
+
+  test("stops flag parsing after --", () => {
+    const result = parseCliArgs(["--name", "val", "--", "--not-a-flag"]);
+    expect(result.positional).toEqual(["--not-a-flag"]);
+    expect(result.flags.get("name")).toBe("val");
+    expect(result.flags.has("not-a-flag")).toBe(false);
+  });
+
+  test("preserves positional args", () => {
+    const result = parseCliArgs(["hello", "--count=2", "world"]);
+    expect(result.positional).toEqual(["hello", "world"]);
+    expect(result.flags.get("count")).toBe("2");
+  });
+
+  test("handles multiple flags", () => {
+    const result = parseCliArgs(["--name=World", "--count=3", "-v"]);
+    expect(result.flags.get("name")).toBe("World");
+    expect(result.flags.get("count")).toBe("3");
+    expect(result.flags.get("v")).toBe(true);
+  });
+
+  test("handles mixed positional and flags in any order", () => {
+    const result = parseCliArgs(["--count=2", "World", "-v"]);
+    expect(result.positional).toEqual(["World"]);
+    expect(result.flags.get("count")).toBe("2");
+    expect(result.flags.get("v")).toBe(true);
+  });
+
+  test("handles empty args", () => {
+    const result = parseCliArgs([]);
+    expect(result.positional).toEqual([]);
+    expect(result.flags.size).toBe(0);
+  });
+
+  test("handles only positional args", () => {
+    const result = parseCliArgs(["hello", "world", "123"]);
+    expect(result.positional).toEqual(["hello", "world", "123"]);
+    expect(result.flags.size).toBe(0);
+  });
+
+  test("handles flag with empty value", () => {
+    const result = parseCliArgs(["--name="]);
+    expect(result.flags.get("name")).toBe("");
+  });
+
+  test("handles boolean flag followed by another flag", () => {
+    const result = parseCliArgs(["--verbose", "--name=World"]);
+    expect(result.flags.get("verbose")).toBe(true);
+    expect(result.flags.get("name")).toBe("World");
+  });
+});
+
+// =============================================================================
 // CLI INTEGRATION TESTS (run actual CLI)
 // =============================================================================
 
@@ -1034,5 +1781,88 @@ describe("Context API (spec section 4)", () => {
     const ctx = new Context();
     expect(ctx.local).toBeDefined();
     expect(typeof ctx.local).toBe("function");
+  });
+});
+
+// =============================================================================
+// FLAG-BASED ARGUMENT CLI INTEGRATION TESTS
+// =============================================================================
+
+describe("CLI flag integration", () => {
+  const run = async (...args: string[]) =>
+    $`bun ../src/cli.ts ${args}`
+      .cwd(import.meta.dir + "/../examples")
+      .quiet()
+      .nothrow();
+
+  test("accepts --name=value syntax", async () => {
+    const result = await run("hello", "--name=World", "--count=2");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("Hello, World!");
+  });
+
+  test("accepts --name value syntax", async () => {
+    const result = await run("hello", "--name", "World", "--count", "2");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("Hello, World!");
+  });
+
+  test("mixes positional and flags", async () => {
+    const result = await run("hello", "World", "--count=2");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("Hello, World!");
+  });
+
+  test("flags anywhere in arg list", async () => {
+    const result = await run("hello", "--count=2", "World");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("Hello, World!");
+  });
+
+  test("backwards compatible: positional-only still works", async () => {
+    const result = await run("hello", "World", "2");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("Hello, World!");
+  });
+
+  test("-- stops flag parsing", async () => {
+    const result = await run("install", "--", "--not-a-flag");
+    expect(result.exitCode).toBe(0);
+    // --not-a-flag should be treated as a package name
+    expect(result.stdout.toString()).toContain("--not-a-flag");
+  });
+
+  test("namespaced task accepts flags", async () => {
+    const result = await run("db:migrate", "--direction=down");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("Migrating database: down");
+  });
+
+  test("shows flag info in task help", async () => {
+    const result = await run("hello", "-h");
+    expect(result.exitCode).toBe(0);
+    const out = result.stdout.toString();
+    expect(out).toContain("--name");
+    expect(out).toContain("--count");
+  });
+
+  test("accepts short flags -n and -c", async () => {
+    const result = await run("hello", "-n", "World", "-c", "2");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("Hello, World!");
+  });
+
+  test("accepts short flag with equals -n=value", async () => {
+    const result = await run("hello", "-n=World", "-c=2");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain("Hello, World!");
+  });
+
+  test("shows short flags in help", async () => {
+    const result = await run("hello", "-h");
+    expect(result.exitCode).toBe(0);
+    const out = result.stdout.toString();
+    expect(out).toContain("-n");
+    expect(out).toContain("-c");
   });
 });

@@ -4,17 +4,31 @@ import { Context } from "./context";
 // Supported parameter types
 type ParamType = "string" | "number" | "boolean" | "object" | "array";
 
+// Flag metadata for a parameter
+interface FlagMeta {
+  long: string; // e.g., "--name"
+  short?: string; // e.g., "-n"
+  aliases?: string[]; // e.g., ["--environment"]
+}
+
 // Parameter metadata extracted from TypeScript
 interface ParamMeta {
   name: string;
   type: ParamType;
   required: boolean;
   isRest: boolean;
+  flag?: FlagMeta;
 }
 
 interface TaskMeta {
   description: string;
   params: ParamMeta[];
+}
+
+// Parsed CLI arguments
+interface ParsedArgs {
+  positional: string[];
+  flags: Map<string, string | boolean>;
 }
 
 interface DiscoveredTasks {
@@ -100,17 +114,56 @@ function extractMethodsFromClass(
         .map((line) => line.replace(/^\s*\*?\s*/, "").trim())
         .filter((line) => line && !line.startsWith("@"))[0] || "";
 
-    const params = parseParams(paramsStr);
+    const params = parseParams(paramsStr, jsdoc);
     methods.set(methodName, { description, params });
   }
 
   return methods;
 }
 
+// Extract @flag annotations from JSDoc
+function extractFlagAnnotations(
+  jsdoc: string,
+): Map<string, { short?: string; aliases?: string[] }> {
+  const flags = new Map<string, { short?: string; aliases?: string[] }>();
+
+  // Match @flag paramName -s --alias1 --alias2
+  const flagPattern = /@flag\s+(\w+)\s+([^\n@]*)/g;
+  let match;
+
+  while ((match = flagPattern.exec(jsdoc)) !== null) {
+    const [, paramName, flagsStr] = match;
+    const parts = flagsStr.trim().split(/\s+/);
+
+    let short: string | undefined;
+    const aliases: string[] = [];
+
+    for (const part of parts) {
+      if (part.startsWith("--")) {
+        aliases.push(part);
+      } else if (part.startsWith("-") && part.length === 2) {
+        short = part;
+      }
+    }
+
+    flags.set(paramName, {
+      short: short,
+      aliases: aliases.length > 0 ? aliases : undefined,
+    });
+  }
+
+  return flags;
+}
+
 // Parse parameter string into ParamMeta array
-function parseParams(paramsStr: string | undefined): ParamMeta[] {
+function parseParams(
+  paramsStr: string | undefined,
+  jsdoc: string = "",
+): ParamMeta[] {
   const params: ParamMeta[] = [];
   if (!paramsStr) return params;
+
+  const flagAnnotations = extractFlagAnnotations(jsdoc);
 
   // Check for rest parameter first: ...name: type
   const restMatch = paramsStr.match(/\.\.\.(\w+)\s*:\s*(\w+\[\]|\w+)/);
@@ -121,6 +174,7 @@ function parseParams(paramsStr: string | undefined): ParamMeta[] {
       type: rawType.endsWith("[]") ? "array" : "string",
       required: false,
       isRest: true,
+      // Rest params don't get flags
     });
     return params;
   }
@@ -146,7 +200,15 @@ function parseParams(paramsStr: string | undefined): ParamMeta[] {
       type = "object";
     }
 
-    params.push({ name, type, required: !hasDefault, isRest: false });
+    // Build flag metadata
+    const annotation = flagAnnotations.get(name);
+    const flag: FlagMeta = {
+      long: `--${name}`,
+      short: annotation?.short,
+      aliases: annotation?.aliases,
+    };
+
+    params.push({ name, type, required: !hasDefault, isRest: false, flag });
   }
 
   return params;
@@ -282,12 +344,182 @@ function coerceArg(value: string, type: ParamType): unknown {
   }
 }
 
+// Parse CLI arguments into flags and positional args
+function parseCliArgs(args: string[]): ParsedArgs {
+  const positional: string[] = [];
+  const flags = new Map<string, string | boolean>();
+  let stopFlagParsing = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (stopFlagParsing) {
+      positional.push(arg);
+      continue;
+    }
+
+    if (arg === "--") {
+      stopFlagParsing = true;
+      continue;
+    }
+
+    // --flag=value
+    if (arg.startsWith("--") && arg.includes("=")) {
+      const eqIdx = arg.indexOf("=");
+      const name = arg.slice(2, eqIdx);
+      const value = arg.slice(eqIdx + 1);
+      flags.set(name, value);
+      continue;
+    }
+
+    // --no-flag (boolean negation)
+    if (arg.startsWith("--no-")) {
+      const name = arg.slice(5);
+      flags.set(name, false);
+      continue;
+    }
+
+    // --flag (may be boolean or need next arg)
+    if (arg.startsWith("--")) {
+      const name = arg.slice(2);
+      const nextArg = args[i + 1];
+
+      // If next arg exists and doesn't look like a flag, use it as value
+      if (nextArg !== undefined && !nextArg.startsWith("-")) {
+        flags.set(name, nextArg);
+        i++; // Skip next arg
+      } else {
+        flags.set(name, true); // Boolean flag
+      }
+      continue;
+    }
+
+    // -f=value (short with equals)
+    if (arg.startsWith("-") && arg.length > 2 && arg.includes("=")) {
+      const eqIdx = arg.indexOf("=");
+      const name = arg.slice(1, eqIdx);
+      const value = arg.slice(eqIdx + 1);
+      flags.set(name, value);
+      continue;
+    }
+
+    // -f value or -f (boolean)
+    if (arg.startsWith("-") && arg.length === 2) {
+      const name = arg.slice(1);
+      const nextArg = args[i + 1];
+
+      if (nextArg !== undefined && !nextArg.startsWith("-")) {
+        flags.set(name, nextArg);
+        i++;
+      } else {
+        flags.set(name, true);
+      }
+      continue;
+    }
+
+    // Positional argument
+    positional.push(arg);
+  }
+
+  return { positional, flags };
+}
+
+// Resolve arguments from parsed CLI args using param metadata
+function resolveArgs(params: ParamMeta[], parsed: ParsedArgs): unknown[] {
+  const result: unknown[] = [];
+  const usedPositional = new Set<number>();
+
+  for (const param of params) {
+    // Handle rest parameters - collect all remaining positional args
+    if (param.isRest) {
+      const remaining = parsed.positional.filter(
+        (_, i) => !usedPositional.has(i),
+      );
+      result.push(...remaining);
+      break;
+    }
+
+    let value: string | boolean | undefined;
+
+    // Try to get value from flags first
+    if (param.flag) {
+      // Check long flag (without --)
+      const longName = param.flag.long.slice(2);
+      if (parsed.flags.has(longName)) {
+        value = parsed.flags.get(longName);
+      }
+      // Check short flag (without -)
+      else if (param.flag.short) {
+        const shortName = param.flag.short.slice(1);
+        if (parsed.flags.has(shortName)) {
+          value = parsed.flags.get(shortName);
+        }
+      }
+      // Check aliases
+      if (value === undefined && param.flag.aliases) {
+        for (const alias of param.flag.aliases) {
+          const aliasName = alias.slice(2);
+          if (parsed.flags.has(aliasName)) {
+            value = parsed.flags.get(aliasName);
+            break;
+          }
+        }
+      }
+    }
+
+    // Fall back to positional if no flag found
+    if (value === undefined) {
+      for (let i = 0; i < parsed.positional.length; i++) {
+        if (!usedPositional.has(i)) {
+          value = parsed.positional[i];
+          usedPositional.add(i);
+          break;
+        }
+      }
+    }
+
+    // Handle missing values
+    if (value === undefined) {
+      if (param.required) {
+        throw new Error(
+          `Missing required argument: <${param.name}> (${param.type})`,
+        );
+      }
+      break; // Optional param not provided, stop processing
+    }
+
+    // Coerce and add to result
+    // Boolean flags that are already boolean don't need coercion
+    if (typeof value === "boolean" && param.type === "boolean") {
+      result.push(value);
+    } else {
+      result.push(coerceArg(String(value), param.type));
+    }
+  }
+
+  return result;
+}
+
 // Format param for help display
 function formatParam(param: ParamMeta): string {
   if (param.isRest) {
     return `[${param.name}...]`;
   }
   return param.required ? `<${param.name}>` : `[${param.name}]`;
+}
+
+// Format flag info for display
+function formatFlagInfo(param: ParamMeta): string {
+  if (!param.flag || param.isRest) return "";
+
+  const parts: string[] = [param.flag.long];
+  if (param.flag.short) {
+    parts.push(param.flag.short);
+  }
+  if (param.flag.aliases) {
+    parts.push(...param.flag.aliases);
+  }
+  return parts.join(", ");
 }
 
 // Display help for a specific task
@@ -306,7 +538,11 @@ function showTaskHelp(command: string, meta: TaskMeta): void {
     for (const param of meta.params) {
       const reqStr = param.required ? "(required)" : "(optional)";
       const typeStr = param.isRest ? `${param.type}...` : param.type;
-      console.log(`  ${param.name.padEnd(15)} ${typeStr.padEnd(10)} ${reqStr}`);
+      const flagStr = formatFlagInfo(param);
+      const flagDisplay = flagStr ? `  ${flagStr}` : "";
+      console.log(
+        `  ${param.name.padEnd(15)} ${typeStr.padEnd(10)} ${reqStr}${flagDisplay}`,
+      );
     }
   }
 }
@@ -324,7 +560,23 @@ async function main() {
   }
 
   // Find tasks.ts
-  const tasksPath = Bun.resolveSync("./tasks.ts", process.cwd());
+  let tasksPath: string;
+  try {
+    tasksPath = Bun.resolveSync("./tasks.ts", process.cwd());
+  } catch {
+    console.log("No tasks.ts found. Create one to get started:\n");
+    console.log(`import { Context } from "invoket/context";
+
+export class Tasks {
+  /** Say hello */
+  async hello(c: Context) {
+    console.log("Hello, World!");
+  }
+}
+`);
+    process.exit(1);
+  }
+
   const source = await Bun.file(tasksPath).text();
 
   // Import and instantiate Tasks class
@@ -480,43 +732,25 @@ async function main() {
     return;
   }
 
+  // Filter out help flags from taskArgs before parsing
+  const argsWithoutHelp = taskArgs.filter((a) => a !== "-h" && a !== "--help");
+
+  // Parse CLI args into flags and positional
+  const parsed = parseCliArgs(argsWithoutHelp);
+
   // Validate and coerce arguments
-  const coercedArgs: unknown[] = [];
+  let coercedArgs: unknown[];
 
   // If no param info (imported namespace), pass all args as strings
-  if (meta.params.length === 0 && taskArgs.length > 0) {
-    coercedArgs.push(...taskArgs);
-  }
-
-  for (let i = 0; i < meta.params.length; i++) {
-    const param = meta.params[i];
-
-    // Handle rest parameters - collect all remaining args and spread them
-    if (param.isRest) {
-      const restArgs = taskArgs.slice(i);
-      coercedArgs.push(...restArgs);
-      break;
-    }
-
-    const arg = taskArgs[i];
-
-    if (arg === undefined) {
-      if (param.required) {
-        console.error(
-          `Missing required argument: <${param.name}> (${param.type})`,
-        );
-        const paramStr = meta.params.map(formatParam).join(" ");
-        console.error(`Usage: ${command} ${paramStr}`);
-        process.exit(1);
-      }
-      // Optional param not provided, don't push (use default)
-      break;
-    }
-
+  if (meta.params.length === 0 && argsWithoutHelp.length > 0) {
+    coercedArgs = [...parsed.positional];
+  } else {
     try {
-      coercedArgs.push(coerceArg(arg, param.type));
+      coercedArgs = resolveArgs(meta.params, parsed);
     } catch (e) {
-      console.error(`Argument "${param.name}": ${(e as Error).message}`);
+      console.error((e as Error).message);
+      const paramStr = meta.params.map(formatParam).join(" ");
+      console.error(`Usage: ${command} ${paramStr}`);
       process.exit(1);
     }
   }

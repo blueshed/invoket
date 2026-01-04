@@ -44,7 +44,11 @@ class InternalNamespace {
 export class Tasks {
   db = new DbNamespace();
   _internal = new InternalNamespace(); // Private namespace
-  /** Say hello with a name and repeat count */
+  /**
+   * Say hello with a name and repeat count
+   * @flag name -n
+   * @flag count -c
+   */
   async hello(c: Context, name: string, count: number) {
     for (let i = 0; i < count; i++) {
       console.log(`Hello, ${name}! (${i + 1}/${count})`);

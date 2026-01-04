@@ -13,9 +13,13 @@ invoket/
 ├── tasks.ts           # User-defined tasks (Tasks class)
 ├── src/
 │   ├── cli.ts         # CLI entry point and type parser
-│   ├── cli.test.ts    # Bun tests (71 tests)
 │   └── context.ts     # Shell execution context
-├── spec.md            # Original JavaScript specification
+├── test/
+│   ├── cli.test.ts    # Main test suite (186 tests)
+│   ├── context.test.ts
+│   └── integration/
+├── examples/
+│   └── tasks.ts       # Example tasks with @flag annotations
 └── package.json       # Binary: invt
 ```
 
@@ -36,12 +40,59 @@ search <entity> <params>
   - params: object (required, parsed as JSON)
 ```
 
+### Argument Parsing
+
+Arguments can be passed positionally or as flags:
+
+```bash
+# All equivalent:
+invt hello World 2                    # positional
+invt hello --name=World --count=2     # long flags with =
+invt hello --name World --count 2     # long flags with space
+invt hello -n World -c 2              # short flags (requires @flag annotation)
+invt hello World --count=2            # mixed positional and flags
+invt hello --count=2 World            # flags can appear anywhere
+```
+
+### Flag Annotations
+
+Define short flags and aliases using JSDoc `@flag` annotations:
+
+```typescript
+/**
+ * Deploy the application
+ * @flag env -e --environment
+ * @flag force -f
+ */
+async deploy(c: Context, env: string, force: boolean = false) {}
+```
+
+This enables:
+- `invt deploy -e prod -f`
+- `invt deploy --environment=prod --force`
+- `invt deploy prod` (positional still works)
+
+### Boolean Flags
+
+Boolean parameters support special handling:
+- `--force` alone means `true`
+- `--force=true` or `--force=false` work explicitly
+- `--no-force` means `false` (negation prefix)
+
+### Stop Flag Parsing
+
+Use `--` to stop flag parsing (standard Unix convention):
+```bash
+invt install -- --not-a-flag    # "--not-a-flag" treated as positional
+```
+
 ### Discovery Algorithm
 
 1. `discoverAllTasks(source)` - Main entry point
 2. `extractMethodsFromClass(source, className)` - Parse class body for methods
-3. `extractClassDoc(source)` - Get class-level JSDoc for help header
-4. Namespace detection via `propName = new ClassName()` pattern
+3. `extractFlagAnnotations(jsdoc)` - Extract `@flag` annotations
+4. `extractClassDoc(source)` - Get class-level JSDoc for help header
+5. Namespace detection via `propName = new ClassName()` pattern
 
 ### Type Coercion
 
@@ -72,6 +123,7 @@ Rest params (`...args: string[]`) are detected and:
 - Displayed as `[args...]` in help
 - Collect all remaining CLI arguments
 - Always optional (no minimum required)
+- Do not get flag metadata (must be positional)
 
 ### Namespaces
 
@@ -88,34 +140,35 @@ Called via `invt db:migrate` or `invt db.migrate`.
 - Namespaces starting with `_` are excluded
 - Calling private methods returns explicit error message
 
-## Implemented Spec Features
+## Implemented Features
 
-| Feature | Spec Section | Status |
-|---------|--------------|--------|
-| Private methods (`_prefix`) | §3 | ✅ |
-| Namespace support (`db:migrate`) | §5 | ✅ |
-| Rest parameters (`...items`) | §3 | ✅ |
-| Prototype chain for inheritance | §8 | ✅ |
-| Class-level JSDoc | §6 | ✅ |
-| `--version` flag | §2 | ✅ |
-| `--help` / `-h` flag (general) | §2 | ✅ |
-| `<task> -h` (task-specific help) | §2 | ✅ |
-| `--list` / `-l` flag | §2 | ✅ |
-| Context.config property | §4 | ✅ |
-| Context.local() alias | §4 | ✅ |
-| Context.run() with options | §4 | ✅ |
-| Context.sudo() | §4 | ✅ |
-| Context.cd() async generator | §4 | ✅ |
+| Feature | Status |
+|---------|--------|
+| Private methods (`_prefix`) | ✅ |
+| Namespace support (`db:migrate`) | ✅ |
+| Rest parameters (`...items`) | ✅ |
+| Prototype chain for inheritance | ✅ |
+| Class-level JSDoc | ✅ |
+| `--version` flag | ✅ |
+| `--help` / `-h` flag (general) | ✅ |
+| `<task> -h` (task-specific help) | ✅ |
+| `--list` / `-l` flag | ✅ |
+| Context.config property | ✅ |
+| Context.local() alias | ✅ |
+| Context.run() with options | ✅ |
+| Context.sudo() | ✅ |
+| Context.cd() async generator | ✅ |
+| Flag-based arguments (`--flag`) | ✅ |
+| Short flags (`-f`) via @flag | ✅ |
+| Flag aliases via @flag | ✅ |
+| Boolean negation (`--no-flag`) | ✅ |
+| Stop flag parsing (`--`) | ✅ |
+| Mixed positional and flags | ✅ |
 
 ### Not Yet Implemented
 
-- `--init` flag (§2) - scaffolding for new projects
-- Plugin system (§7) - pre/post task hooks
-- Legacy underscore notation `db_migrate` (§5) - prefer `:` or `.` separators
-
-### Intentionally Skipped
-
-- Superclass resolution (§11) - **Not needed with TypeScript**. Inherited methods work at runtime via prototype chain. Source parsing only needed for the declaring class.
+- `--init` flag - scaffolding for new projects
+- Plugin system - pre/post task hooks
 
 ## Common Tasks
 
@@ -124,13 +177,16 @@ Called via `invt db:migrate` or `invt db.migrate`.
 1. Add to `ParamType` union in `cli.ts`
 2. Add detection in the type mapping `if/else` chain in `parseParams()`
 3. Add coercion case in `coerceArg()` switch
-4. Add tests in `cli.test.ts`
+4. Add tests in `test/cli.test.ts`
 
 ### Adding a new task
 
 Edit `tasks.ts`:
 ```typescript
-/** Description for help text */
+/**
+ * Description for help text
+ * @flag param1 -p
+ */
 async myTask(c: Context, param1: string, param2: SomeType) {
   // implementation
 }
@@ -154,14 +210,30 @@ export class Tasks {
 ## Testing
 
 ```bash
-bun test                    # Run all tests (71 tests)
+bun test                    # Run all tests (186 tests)
 bun test --watch           # Watch mode
+bun test --grep "pattern"  # Run specific tests
 ```
 
 Tests include:
-- Unit tests for `extractTaskMeta`, `coerceArg`, `parseCommand`
+- Unit tests for `parseCliArgs`, `resolveArgs`, `coerceArg`
+- Unit tests for `extractFlagAnnotations`, `parseParamsWithFlags`
 - Unit tests for `discoverTasks`, `validateTaskName`
 - Integration tests that run the actual CLI
+
+## Publishing
+
+Publishing to npm is automated via GitHub Actions when you push a tag:
+
+```bash
+# Update version in package.json, then:
+git add -A
+git commit -m "v0.1.5"
+git tag v0.1.5
+git push && git push --tags
+```
+
+The workflow (`.github/workflows/publish.yml`) runs tests and publishes with npm provenance.
 
 ## Bun-Specific Features Used
 
