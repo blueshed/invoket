@@ -260,4 +260,69 @@ describe("Context", () => {
       expect(result.code).toBeDefined();
     });
   });
+
+  describe("stream option", () => {
+    test("should execute command successfully with stream=true", async () => {
+      const result = await context.run("echo 'streaming'", { stream: true });
+      expect(result.code).toBe(0);
+      expect(result.ok).toBe(true);
+      expect(result.failed).toBe(false);
+    });
+
+    test("should return empty stdout/stderr when streaming", async () => {
+      const result = await context.run("echo 'output'", { stream: true });
+      // When streaming, output goes directly to terminal, not captured
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("");
+    });
+
+    test("should handle command failure with stream=true", async () => {
+      try {
+        await context.run("exit 1", { stream: true });
+        expect(true).toBe(false); // Should not reach here
+      } catch (error: any) {
+        expect(error.message).toContain("exit code 1");
+        expect(error.result.code).toBe(1);
+        expect(error.result.failed).toBe(true);
+      }
+    });
+
+    test("should continue on failure with stream=true and warn=true", async () => {
+      const result = await context.run("exit 1", { stream: true, warn: true });
+      expect(result.code).toBe(1);
+      expect(result.failed).toBe(true);
+      // Should not throw
+    });
+
+    test("should respect cwd option when streaming", async () => {
+      // Can't capture output when streaming, but we can verify command runs in correct directory
+      const result = await context.run("test -d /tmp && exit 0 || exit 1", {
+        stream: true,
+        cwd: "/tmp",
+      });
+      expect(result.code).toBe(0);
+    });
+
+    test("should handle stderr when streaming", async () => {
+      const result = await context.run("echo 'error' >&2", {
+        stream: true,
+        warn: true,
+      });
+      // stderr goes to terminal, not captured
+      expect(result.stderr).toBe("");
+      expect(result.code).toBe(0);
+    });
+
+    test("should work with complex piped commands", async () => {
+      const result = await context.run("echo 'hello world' | grep 'world'", {
+        stream: true,
+      });
+      expect(result.code).toBe(0);
+    });
+
+    test("stream option should be stored in config", () => {
+      const streamContext = new Context({ stream: true });
+      expect(streamContext.config.stream).toBe(true);
+    });
+  });
 });

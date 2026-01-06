@@ -1,4 +1,4 @@
-import { $ } from "bun";
+import { $, spawn } from "bun";
 import { resolve } from "path";
 
 export interface RunResult {
@@ -13,6 +13,7 @@ export interface RunOptions {
   echo?: boolean;
   warn?: boolean;
   hide?: boolean;
+  stream?: boolean;
   cwd?: string;
 }
 
@@ -43,14 +44,26 @@ export class Context {
       console.log(`$ ${command}`);
     }
 
-    const result = await $`sh -c ${command}`
-      .cwd(opts.cwd ?? this.cwd)
-      .nothrow()
-      .quiet();
+    let result;
+    if (opts.stream) {
+      // Stream output in real-time using Bun.spawn with inherited stdio
+      const proc = spawn(["sh", "-c", command], {
+        cwd: opts.cwd ?? this.cwd,
+        stdout: "inherit",
+        stderr: "inherit",
+      });
+      const exitCode = await proc.exited;
+      result = { exitCode, stdout: Buffer.from(""), stderr: Buffer.from("") };
+    } else {
+      result = await $`sh -c ${command}`
+        .cwd(opts.cwd ?? this.cwd)
+        .nothrow()
+        .quiet();
+    }
 
     const runResult: RunResult = {
-      stdout: result.stdout.toString(),
-      stderr: result.stderr.toString(),
+      stdout: opts.stream ? "" : result.stdout.toString(),
+      stderr: opts.stream ? "" : result.stderr.toString(),
       code: result.exitCode,
       ok: result.exitCode === 0,
       failed: result.exitCode !== 0,
@@ -64,7 +77,8 @@ export class Context {
       throw error;
     }
 
-    if (!opts.hide) {
+    // When streaming, output already went to terminal; otherwise write captured output
+    if (!opts.stream && !opts.hide) {
       if (runResult.stdout) process.stdout.write(runResult.stdout);
       if (runResult.stderr) process.stderr.write(runResult.stderr);
     }
