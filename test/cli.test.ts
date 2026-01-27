@@ -965,13 +965,15 @@ function parseParamsWithFlags(
     return params;
   }
 
+  // Updated regex to handle union types with null (e.g., string | null)
   const paramPattern =
-    /(\w+)\s*:\s*(\w+\[\]|Record<[^>]+>|\{[^}]*\}|string|number|boolean|\w+)(?:\s*=\s*[^,)]+)?/g;
+    /(\w+)\s*:\s*(\w+\[\]|Record<[^>]+>|\{[^}]*\}|string|number|boolean|\w+)(?:\s*\|\s*null)?(?:\s*=\s*[^,)]+)?/g;
   let paramMatch;
 
   while ((paramMatch = paramPattern.exec(paramsStr)) !== null) {
     const [fullMatch, name, rawType] = paramMatch;
     const hasDefault = fullMatch.includes("=");
+    const isNullable = fullMatch.includes("| null");
 
     let type: ParamType;
     if (rawType === "string") {
@@ -997,7 +999,7 @@ function parseParamsWithFlags(
     params.push({
       name,
       type,
-      required: !hasDefault,
+      required: !hasDefault && !isNullable,
       isRest: false,
       flag,
     });
@@ -1153,6 +1155,45 @@ describe("parseParamsWithFlags", () => {
       required: false,
       isRest: false,
     });
+  });
+
+  test("nullable params are treated as optional", () => {
+    const params = parseParamsWithFlags(
+      "name: string, filter: string | null",
+      "Search",
+    );
+    expect(params[0]).toMatchObject({
+      name: "name",
+      type: "string",
+      required: true,
+    });
+    expect(params[1]).toMatchObject({
+      name: "filter",
+      type: "string",
+      required: false,
+    });
+  });
+
+  test("nullable with default is still optional", () => {
+    const params = parseParamsWithFlags(
+      "filter: string | null = null",
+      "Search",
+    );
+    expect(params[0]).toMatchObject({
+      name: "filter",
+      type: "string",
+      required: false,
+    });
+  });
+
+  test("handles multiple nullable params", () => {
+    const params = parseParamsWithFlags(
+      "a: string, b: number | null, c: boolean | null",
+      "Test",
+    );
+    expect(params[0].required).toBe(true);
+    expect(params[1].required).toBe(false);
+    expect(params[2].required).toBe(false);
   });
 });
 

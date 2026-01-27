@@ -179,13 +179,15 @@ function parseParams(
     return params;
   }
 
+  // Updated regex to handle union types with null (e.g., string | null)
   const paramPattern =
-    /(\w+)\s*:\s*(\w+\[\]|Record<[^>]+>|\{[^}]*\}|string|number|boolean|\w+)(?:\s*=\s*[^,)]+)?/g;
+    /(\w+)\s*:\s*(\w+\[\]|Record<[^>]+>|\{[^}]*\}|string|number|boolean|\w+)(?:\s*\|\s*null)?(?:\s*=\s*[^,)]+)?/g;
   let paramMatch;
 
   while ((paramMatch = paramPattern.exec(paramsStr)) !== null) {
     const [fullMatch, name, rawType] = paramMatch;
     const hasDefault = fullMatch.includes("=");
+    const isNullable = fullMatch.includes("| null");
 
     let type: ParamType;
     if (rawType === "string") {
@@ -208,7 +210,13 @@ function parseParams(
       aliases: annotation?.aliases,
     };
 
-    params.push({ name, type, required: !hasDefault, isRest: false, flag });
+    params.push({
+      name,
+      type,
+      required: !hasDefault && !isNullable,
+      isRest: false,
+      flag,
+    });
   }
 
   return params;
