@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { Context } from "../src/context";
+import { Context, CommandError } from "../src/context";
 import { existsSync, mkdirSync, rmSync } from "fs";
 
 describe("Context", () => {
@@ -323,6 +323,47 @@ describe("Context", () => {
     test("stream option should be stored in config", () => {
       const streamContext = new Context({ stream: true });
       expect(streamContext.config.stream).toBe(true);
+    });
+  });
+
+  describe("CommandError", () => {
+    test("should be instance of Error", () => {
+      const err = new CommandError("test", {
+        stdout: "",
+        stderr: "",
+        code: 1,
+        ok: false,
+        failed: true,
+      });
+      expect(err).toBeInstanceOf(Error);
+      expect(err).toBeInstanceOf(CommandError);
+    });
+
+    test("should have result property with RunResult", () => {
+      const result = {
+        stdout: "out",
+        stderr: "err",
+        code: 42,
+        ok: false,
+        failed: true,
+      };
+      const err = new CommandError("command failed", result);
+      expect(err.result).toEqual(result);
+      expect(err.message).toBe("command failed");
+      expect(err.name).toBe("CommandError");
+    });
+
+    test("run() throws CommandError on failure", async () => {
+      try {
+        await context.run("exit 1", { hide: true });
+        expect(true).toBe(false);
+      } catch (error) {
+        expect(error).toBeInstanceOf(CommandError);
+        if (error instanceof CommandError) {
+          expect(error.result.code).toBe(1);
+          expect(error.result.failed).toBe(true);
+        }
+      }
     });
   });
 });

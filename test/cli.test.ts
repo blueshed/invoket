@@ -861,16 +861,18 @@ function parseCliArgs(args: string[]): ParsedArgs {
       continue;
     }
 
-    // -f=value (short with equals)
-    if (arg.startsWith("-") && arg.length > 2 && arg.includes("=")) {
+    // -f=value (short with equals, single char only)
+    if (arg.startsWith("-") && !arg.startsWith("--") && arg.includes("=")) {
       const eqIdx = arg.indexOf("=");
       const name = arg.slice(1, eqIdx);
-      const value = arg.slice(eqIdx + 1);
-      flags.set(name, value);
-      continue;
+      if (name.length === 1) {
+        const value = arg.slice(eqIdx + 1);
+        flags.set(name, value);
+        continue;
+      }
     }
 
-    // -f value or -f (boolean)
+    // -f value or -f (boolean) — single char short flags only
     if (arg.startsWith("-") && arg.length === 2) {
       const name = arg.slice(1);
       const nextArg = args[i + 1];
@@ -1262,7 +1264,7 @@ function resolveArgs(
           `Missing required argument: <${param.name}> (${param.type})`,
         );
       }
-      break; // Optional param not provided, stop processing
+      continue; // Optional param not provided, skip and check remaining params
     }
 
     // Coerce and add to result
@@ -1493,6 +1495,49 @@ describe("resolveArgs", () => {
     const result = resolveArgs(params, parsed, coerceArg);
     expect(result).toEqual(["World", 2]);
   });
+
+  test("skips optional param but still processes subsequent required params", () => {
+    const params = makeParams([
+      { name: "name", type: "string" },
+      { name: "optional", type: "string", required: false },
+      { name: "required", type: "number" },
+    ]);
+    // Only provide name and required (skip optional)
+    const parsed = {
+      positional: ["World"],
+      flags: new Map<string, string | boolean>([["required", "42"]]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual(["World", 42]);
+  });
+
+  test("skips multiple optional params and resolves later required param", () => {
+    const params = makeParams([
+      { name: "a", type: "string", required: false },
+      { name: "b", type: "string", required: false },
+      { name: "c", type: "number" },
+    ]);
+    const parsed = {
+      positional: [],
+      flags: new Map<string, string | boolean>([["c", "7"]]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual([7]);
+  });
+
+  test("resolves optional param via flag while positional fills required", () => {
+    const params = makeParams([
+      { name: "name", type: "string" },
+      { name: "verbose", type: "boolean", required: false },
+      { name: "count", type: "number" },
+    ]);
+    const parsed = {
+      positional: ["World", "3"],
+      flags: new Map<string, string | boolean>([["verbose", true]]),
+    };
+    const result = resolveArgs(params, parsed, coerceArg);
+    expect(result).toEqual(["World", true, 3]);
+  });
 });
 
 describe("parseCliArgs", () => {
@@ -1586,6 +1631,48 @@ describe("parseCliArgs", () => {
     const result = parseCliArgs(["--verbose", "--name=World"]);
     expect(result.flags.get("verbose")).toBe(true);
     expect(result.flags.get("name")).toBe("World");
+  });
+
+  test("treats multi-char short flag (-abc) as positional", () => {
+    const result = parseCliArgs(["-abc"]);
+    expect(result.positional).toEqual(["-abc"]);
+    expect(result.flags.size).toBe(0);
+  });
+
+  test("treats multi-char short flag with value (-abc=val) as positional", () => {
+    const result = parseCliArgs(["-abc=val"]);
+    expect(result.positional).toEqual(["-abc=val"]);
+    expect(result.flags.size).toBe(0);
+  });
+
+  test("handles flag value starting with a digit (not a flag)", () => {
+    const result = parseCliArgs(["--port", "8080"]);
+    expect(result.flags.get("port")).toBe("8080");
+  });
+
+  test("handles short flag with empty equals value", () => {
+    const result = parseCliArgs(["-n="]);
+    expect(result.flags.get("n")).toBe("");
+  });
+
+  test("handles -- followed by flag-like args as positional", () => {
+    const result = parseCliArgs(["--", "--flag", "-x", "--no-thing"]);
+    expect(result.positional).toEqual(["--flag", "-x", "--no-thing"]);
+    expect(result.flags.size).toBe(0);
+  });
+
+  test("handles boolean flag before a flag-like negative number", () => {
+    const result = parseCliArgs(["--verbose", "-1"]);
+    // -1 looks like a flag, so --verbose is boolean true
+    expect(result.flags.get("verbose")).toBe(true);
+    // -1 is length 2 so it's parsed as short flag "1" = true
+    expect(result.flags.get("1")).toBe(true);
+  });
+
+  test("handles --no- prefix with equals syntax", () => {
+    // --no-verbose=false is ambiguous but --no-verbose is clear
+    const result = parseCliArgs(["--no-verbose"]);
+    expect(result.flags.get("verbose")).toBe(false);
   });
 });
 

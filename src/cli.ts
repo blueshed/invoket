@@ -402,16 +402,18 @@ function parseCliArgs(args: string[]): ParsedArgs {
       continue;
     }
 
-    // -f=value (short with equals)
-    if (arg.startsWith("-") && arg.length > 2 && arg.includes("=")) {
+    // -f=value (short with equals, single char only)
+    if (arg.startsWith("-") && !arg.startsWith("--") && arg.includes("=")) {
       const eqIdx = arg.indexOf("=");
       const name = arg.slice(1, eqIdx);
-      const value = arg.slice(eqIdx + 1);
-      flags.set(name, value);
-      continue;
+      if (name.length === 1) {
+        const value = arg.slice(eqIdx + 1);
+        flags.set(name, value);
+        continue;
+      }
     }
 
-    // -f value or -f (boolean)
+    // -f value or -f (boolean) — single char short flags only
     if (arg.startsWith("-") && arg.length === 2) {
       const name = arg.slice(1);
       const nextArg = args[i + 1];
@@ -493,7 +495,7 @@ function resolveArgs(params: ParamMeta[], parsed: ParsedArgs): unknown[] {
           `Missing required argument: <${param.name}> (${param.type})`,
         );
       }
-      break; // Optional param not provided, stop processing
+      continue; // Optional param not provided, skip and check remaining params
     }
 
     // Coerce and add to result
