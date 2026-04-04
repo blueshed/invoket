@@ -27,13 +27,18 @@ async function main() {
     return;
   }
 
-  // Find tasks.ts
-  let tasksPath: string;
-  try {
-    tasksPath = Bun.resolveSync("./tasks.ts", process.cwd());
-  } catch {
-    console.log("No tasks.ts found. Create one to get started:\n");
-    console.log(`import { Context } from "invoket/context";
+  // --init flag: scaffold tasks.ts and CLAUDE.md
+  if (args[0] === "--init") {
+    const { existsSync } = await import("fs");
+    const cwd = process.cwd();
+
+    const tasksFile = `${cwd}/tasks.ts`;
+    if (existsSync(tasksFile)) {
+      console.log("tasks.ts already exists, skipping.");
+    } else {
+      await Bun.write(
+        tasksFile,
+        `import { Context } from "invoket/context";
 
 export class Tasks {
   /** Say hello */
@@ -41,7 +46,36 @@ export class Tasks {
     console.log("Hello, World!");
   }
 }
-`);
+`,
+      );
+      console.log("Created tasks.ts");
+    }
+
+    const claudeFile = `${cwd}/CLAUDE.md`;
+    const claudeMdPath = new URL("../CLAUDE.md", import.meta.url).pathname;
+    const claudeMd = await Bun.file(claudeMdPath).text();
+    if (existsSync(claudeFile)) {
+      const existing = await Bun.file(claudeFile).text();
+      if (existing.includes("invoket")) {
+        console.log("CLAUDE.md already has invoket section, skipping.");
+      } else {
+        await Bun.write(claudeFile, existing.trimEnd() + "\n\n" + claudeMd);
+        console.log("Appended invoket guide to CLAUDE.md");
+      }
+    } else {
+      await Bun.write(claudeFile, claudeMd);
+      console.log("Created CLAUDE.md");
+    }
+
+    return;
+  }
+
+  // Find tasks.ts
+  let tasksPath: string;
+  try {
+    tasksPath = Bun.resolveSync("./tasks.ts", process.cwd());
+  } catch {
+    console.log("No tasks.ts found. Run 'invt --init' to get started.");
     process.exit(1);
   }
 

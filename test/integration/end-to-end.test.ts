@@ -45,6 +45,48 @@ describe("End-to-End CLI Tests", () => {
     }
   });
 
+  describe("CLI Init", () => {
+    test("should scaffold tasks.ts and CLAUDE.md", async () => {
+      const result = await runCLI("--init");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("Created tasks.ts");
+      expect(result.stdout).toContain("Created CLAUDE.md");
+      expect(existsSync(join(TEST_DIR, "tasks.ts"))).toBe(true);
+      expect(existsSync(join(TEST_DIR, "CLAUDE.md"))).toBe(true);
+    });
+
+    test("should not overwrite existing tasks.ts", async () => {
+      writeFileSync(join(TEST_DIR, "tasks.ts"), "existing");
+
+      const result = await runCLI("--init");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("already exists");
+
+      const tasks = await Bun.file(join(TEST_DIR, "tasks.ts")).text();
+      expect(tasks).toBe("existing");
+    });
+
+    test("should append to existing CLAUDE.md", async () => {
+      writeFileSync(join(TEST_DIR, "CLAUDE.md"), "# Existing project notes\n");
+
+      const result = await runCLI("--init");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("Appended invoket guide");
+
+      const claude = await Bun.file(join(TEST_DIR, "CLAUDE.md")).text();
+      expect(claude).toContain("# Existing project notes");
+      expect(claude).toContain("invoket");
+    });
+
+    test("should skip CLAUDE.md if invoket section already present", async () => {
+      writeFileSync(join(TEST_DIR, "CLAUDE.md"), "# CLAUDE.md\ninvoket tasks\n");
+
+      const result = await runCLI("--init");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("already has invoket section");
+    });
+  });
+
   describe("CLI Help and Version", () => {
     test("should show help with --help", async () => {
       writeTasks(`
@@ -435,6 +477,7 @@ export class Tasks {
       const result = await runCLI("build");
       expect(result.code).toBe(1);
       expect(result.stdout).toContain("No tasks.ts found");
+      expect(result.stdout).toContain("--init");
     });
 
     test("should handle invalid tasks.ts syntax", async () => {

@@ -28,13 +28,21 @@ One script solves one problem. A `tasks.ts` file is a project's command centre.
 ## Installation
 
 ```bash
-bun add -d invoket    # Add to project
-bun link invoket      # Or link globally for development
+bun add -d invoket     # Add to project (use bunx invt to run)
+bun add -g invoket     # Or install globally (invt available on PATH)
 ```
+
+Then scaffold your project:
+
+```bash
+bunx invt --init       # Creates tasks.ts and CLAUDE.md
+```
+
+`--init` creates a starter `tasks.ts` and copies the `CLAUDE.md` reference card into your project so AI agents know how to write tasks.
 
 ## Quick Start
 
-Create `tasks.ts`:
+Edit `tasks.ts`:
 
 ```typescript
 import { Context } from "invoket/context";
@@ -153,6 +161,7 @@ Flags and positional args can be freely mixed in any order.
 | `<task> -h` | Help for a specific task |
 | `-l`, `--list` | List tasks |
 | `--version` | Show version |
+| `--init` | Scaffold `tasks.ts` and `CLAUDE.md` |
 
 ## Context API
 
