@@ -12,10 +12,11 @@ This file provides context for AI assistants working on this codebase.
 invoket/
 ├── tasks.ts           # User-defined tasks (Tasks class)
 ├── src/
-│   ├── cli.ts         # CLI entry point and type parser
-│   └── context.ts     # Shell execution context
+│   ├── cli.ts         # CLI entry point (thin, imports from parser.ts)
+│   ├── parser.ts      # All parsing logic, types, and exports
+│   └── context.ts     # Shell execution context + CommandError
 ├── test/
-│   ├── cli.test.ts    # Main test suite (186 tests)
+│   ├── cli.test.ts    # Main test suite (221 tests, imports from parser.ts)
 │   ├── context.test.ts
 │   └── integration/
 ├── examples/
@@ -174,7 +175,7 @@ Called via `invt db:migrate` or `invt db.migrate`.
 
 ### Adding a new primitive type
 
-1. Add to `ParamType` union in `cli.ts`
+1. Add to `ParamType` union in `parser.ts`
 2. Add detection in the type mapping `if/else` chain in `parseParams()`
 3. Add coercion case in `coerceArg()` switch
 4. Add tests in `test/cli.test.ts`
@@ -210,15 +211,22 @@ export class Tasks {
 ## Testing
 
 ```bash
-bun test                    # Run all tests (186 tests)
+bun test                    # Run all tests (221 tests)
+bun test --coverage        # Run with coverage report
 bun test --watch           # Watch mode
 bun test --grep "pattern"  # Run specific tests
 ```
 
+Coverage: 100% functions, 99.87% lines.
+
+Tests import directly from `src/parser.ts` — no duplicated logic in test files.
+
 Tests include:
 - Unit tests for `parseCliArgs`, `resolveArgs`, `coerceArg`
-- Unit tests for `extractFlagAnnotations`, `parseParamsWithFlags`
-- Unit tests for `discoverTasks`, `validateTaskName`
+- Unit tests for `extractFlagAnnotations`, `parseParams`
+- Unit tests for `discoverAllTasks`, `discoverRuntimeNamespaces`
+- Unit tests for `formatParam`, `formatFlagInfo`, `showTaskHelp`, `printTaskList`
+- Unit tests for `CommandError` class
 - Integration tests that run the actual CLI
 
 ## Publishing

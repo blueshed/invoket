@@ -99,6 +99,46 @@ Call with `invt db:migrate up` or `invt db.seed`.
 | `items: string[]` | `<items>` | `'["a", "b", "c"]'` |
 | `...args: string[]` | `[args...]` | `a b c` (variadic) |
 
+## Flag-Based Arguments
+
+Arguments can be passed positionally or as flags:
+
+```bash
+invt hello World 2                    # positional
+invt hello --name=World --count=2     # long flags with =
+invt hello --name World --count 2     # long flags with space
+invt hello -n World -c 2              # short flags (requires @flag)
+invt hello World --count=2            # mixed positional and flags
+invt hello --count=2 World            # flags can appear anywhere
+```
+
+### @flag Annotations
+
+Define short flags and aliases with JSDoc `@flag`:
+
+```typescript
+/**
+ * Deploy the application
+ * @flag env -e --environment
+ * @flag force -f
+ */
+async deploy(c: Context, env: string, force: boolean = false) {}
+```
+
+### Boolean Flags
+
+```bash
+invt deploy --force                   # true
+invt deploy --force=true              # true
+invt deploy --no-force                # false (negation prefix)
+```
+
+### Stop Flag Parsing
+
+```bash
+invt install -- --not-a-flag          # "--not-a-flag" treated as positional
+```
+
 ## CLI Flags
 
 | Flag | Description |
@@ -172,6 +212,7 @@ async deploy(c: Context, env: string) {
 | `echo` | boolean | false | Print command before execution |
 | `warn` | boolean | false | Don't throw on non-zero exit |
 | `hide` | boolean | false | Capture output instead of printing |
+| `stream` | boolean | false | Stream output in real-time (stdout/stderr not captured) |
 | `cwd` | string | process.cwd() | Working directory |
 
 ### RunResult
@@ -183,6 +224,23 @@ interface RunResult {
   code: number;
   ok: boolean;      // code === 0
   failed: boolean;  // code !== 0
+}
+```
+
+### Error Handling
+
+Failed commands throw a `CommandError` with the result attached:
+
+```typescript
+import { CommandError } from "invoket/context";
+
+try {
+  await c.run("exit 1");
+} catch (e) {
+  if (e instanceof CommandError) {
+    console.log(e.result.code);    // 1
+    console.log(e.result.stderr);  // error output
+  }
 }
 ```
 
