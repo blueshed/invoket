@@ -364,134 +364,34 @@ describe("namespace parsing (spec section 5)", () => {
   });
 });
 
-// Discover tasks from an instance (runtime discovery)
-interface DiscoveryResult {
-  root: string[];
-  namespaced: Record<string, string[]>;
-}
-
-function discoverTasks(instance: any): DiscoveryResult {
-  const root: string[] = [];
-  const namespaced: Record<string, string[]> = {};
-
-  // Walk prototype chain for root tasks
-  let proto = Object.getPrototypeOf(instance);
-  while (proto && proto !== Object.prototype) {
-    for (const name of Object.getOwnPropertyNames(proto)) {
-      if (
-        name !== "constructor" &&
-        !name.startsWith("_") &&
-        typeof proto[name] === "function" &&
-        !root.includes(name)
-      ) {
-        root.push(name);
-      }
-    }
-    proto = Object.getPrototypeOf(proto);
-  }
-
-  // Get namespaced tasks from instance properties
-  for (const name of Object.getOwnPropertyNames(instance)) {
-    if (name.startsWith("_")) continue;
-
-    const prop = instance[name];
-    if (prop && typeof prop === "object" && !Array.isArray(prop)) {
-      const methods: string[] = [];
-      let nsproto = Object.getPrototypeOf(prop);
-      while (nsproto && nsproto !== Object.prototype) {
-        for (const methodName of Object.getOwnPropertyNames(nsproto)) {
-          if (
-            methodName !== "constructor" &&
-            !methodName.startsWith("_") &&
-            typeof nsproto[methodName] === "function" &&
-            !methods.includes(methodName)
-          ) {
-            methods.push(methodName);
-          }
-        }
-        nsproto = Object.getPrototypeOf(nsproto);
-      }
-      if (methods.length > 0) {
-        namespaced[name] = methods;
-      }
-    }
-  }
-
-  return { root, namespaced };
-}
-
 describe("task discovery (spec section 8)", () => {
-  test("discovers root methods", () => {
-    class Tasks {
-      async hello() {}
-      async build() {}
-    }
-    const result = discoverTasks(new Tasks());
-    expect(result.root).toContain("hello");
-    expect(result.root).toContain("build");
-  });
-
-  test("excludes private methods", () => {
-    class Tasks {
-      async hello() {}
-      async _private() {}
-    }
-    const result = discoverTasks(new Tasks());
-    expect(result.root).toContain("hello");
-    expect(result.root).not.toContain("_private");
-  });
-
-  test("excludes constructor", () => {
-    class Tasks {
-      constructor() {}
-      async hello() {}
-    }
-    const result = discoverTasks(new Tasks());
-    expect(result.root).not.toContain("constructor");
-    expect(result.root).toContain("hello");
-  });
-
-  test("discovers inherited methods", () => {
-    class BaseTasks {
-      async baseTask() {}
-    }
-    class Tasks extends BaseTasks {
-      async childTask() {}
-    }
-    const result = discoverTasks(new Tasks());
-    expect(result.root).toContain("baseTask");
-    expect(result.root).toContain("childTask");
-  });
-
-  test("discovers namespaced methods", () => {
+  test("discovers namespaced methods at runtime", () => {
     class DbNamespace {
       async migrate() {}
       async seed() {}
     }
     class Tasks {
       db = new DbNamespace();
-      async hello() {}
     }
-    const result = discoverTasks(new Tasks());
-    expect(result.root).toContain("hello");
-    expect(result.namespaced.db).toContain("migrate");
-    expect(result.namespaced.db).toContain("seed");
+    const discovered: DiscoveredTasks = { root: new Map(), namespaced: new Map(), classDoc: null };
+    discoverRuntimeNamespaces(new Tasks(), discovered);
+    expect(discovered.namespaced.get("db")!.has("migrate")).toBe(true);
+    expect(discovered.namespaced.get("db")!.has("seed")).toBe(true);
   });
 
-  test("excludes private namespaces", () => {
+  test("excludes private namespaces at runtime", () => {
     class Internal {
       async secret() {}
     }
     class Tasks {
       _internal = new Internal();
-      async hello() {}
     }
-    const result = discoverTasks(new Tasks());
-    expect(result.root).toContain("hello");
-    expect(result.namespaced._internal).toBeUndefined();
+    const discovered: DiscoveredTasks = { root: new Map(), namespaced: new Map(), classDoc: null };
+    discoverRuntimeNamespaces(new Tasks(), discovered);
+    expect(discovered.namespaced.has("_internal")).toBe(false);
   });
 
-  test("excludes private methods in namespaces", () => {
+  test("excludes private methods in runtime namespaces", () => {
     class DbNamespace {
       async migrate() {}
       async _helper() {}
@@ -499,9 +399,29 @@ describe("task discovery (spec section 8)", () => {
     class Tasks {
       db = new DbNamespace();
     }
-    const result = discoverTasks(new Tasks());
-    expect(result.namespaced.db).toContain("migrate");
-    expect(result.namespaced.db).not.toContain("_helper");
+    const discovered: DiscoveredTasks = { root: new Map(), namespaced: new Map(), classDoc: null };
+    discoverRuntimeNamespaces(new Tasks(), discovered);
+    expect(discovered.namespaced.get("db")!.has("migrate")).toBe(true);
+    expect(discovered.namespaced.get("db")!.has("_helper")).toBe(false);
+  });
+
+  test("discovers root and namespaced from source", () => {
+    const source = `
+class DbNamespace {
+  /** Migrate */
+  async migrate(c: Context) {}
+}
+export class Tasks {
+  db = new DbNamespace();
+  /** Hello */
+  async hello(c: Context) {}
+  async _private(c: Context) {}
+}
+`;
+    const discovered = discoverAllTasks(source);
+    expect(discovered.root.has("hello")).toBe(true);
+    expect(discovered.root.has("_private")).toBe(false);
+    expect(discovered.namespaced.get("db")!.has("migrate")).toBe(true);
   });
 });
 
@@ -534,51 +454,8 @@ describe("JSDoc extraction (spec section 6)", () => {
 });
 
 // Validate task name
-function validateTaskName(name: string): { valid: boolean; error?: string } {
-  if (name === "constructor") {
-    return {
-      valid: false,
-      error: 'Cannot call constructor method "constructor"',
-    };
-  }
-  if (name.startsWith("_")) {
-    return { valid: false, error: `Cannot call private method "${name}"` };
-  }
-  return { valid: true };
-}
-
-function validateNamespace(name: string): { valid: boolean; error?: string } {
-  if (name.startsWith("_")) {
-    return { valid: false, error: `Cannot call private namespace "${name}"` };
-  }
-  return { valid: true };
-}
-
-describe("error handling (spec section 10)", () => {
-  test("rejects constructor invocation", () => {
-    const result = validateTaskName("constructor");
-    expect(result.valid).toBe(false);
-    expect(result.error).toBe('Cannot call constructor method "constructor"');
-  });
-
-  test("rejects private method invocation", () => {
-    const result = validateTaskName("_helper");
-    expect(result.valid).toBe(false);
-    expect(result.error).toBe('Cannot call private method "_helper"');
-  });
-
-  test("rejects private namespace", () => {
-    const result = validateNamespace("_internal");
-    expect(result.valid).toBe(false);
-    expect(result.error).toBe('Cannot call private namespace "_internal"');
-  });
-
-  test("allows valid task names", () => {
-    expect(validateTaskName("hello").valid).toBe(true);
-    expect(validateTaskName("build").valid).toBe(true);
-    expect(validateTaskName("deployProd").valid).toBe(true);
-  });
-});
+// Validation of private methods/namespaces is tested via CLI integration tests:
+// "rejects private method call", "rejects private namespace", "rejects private method in namespace"
 
 describe("rest parameters (spec section 3)", () => {
   test("detects rest parameter", () => {
