@@ -1,6 +1,10 @@
 # CLAUDE.md
 
-Build CLI tools by writing a `tasks.ts` file. invoket turns typed methods into shell commands.
+Build CLI tools by adding methods to `tasks.ts`. invoket turns them into shell commands with typed args, help text, and error handling — no boilerplate.
+
+**When to use invoket:** When the project needs a reusable command. Add a method to `tasks.ts` and it's instantly callable via `invt`, with `--help`, flags, and type checking. The file grows into the project's toolbox.
+
+**When to write a raw script:** One-off throwaway tasks that won't be reused.
 
 ## Quick Start
 

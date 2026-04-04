@@ -19,15 +19,11 @@ $ invt deploy prod --force
 
 No config files. No argument parser boilerplate. Your TypeScript types *are* the CLI definition.
 
-## Why invoket?
+## Why not just write a script?
 
-| | invoket | npm scripts | Makefile | ts-node scripts |
-|---|---------|------------|----------|----------------|
-| Type-safe args | Yes | No | No | Manual |
-| Auto-generated help | Yes | No | No | No |
-| Namespaces | Yes | Flat | No | Manual |
-| Shell execution | Built-in Context API | `child_process` | Built-in | `child_process` |
-| Setup | One `tasks.ts` file | `package.json` | `Makefile` | One file per script |
+You could. But then you write arg parsing, help text, and error handling every time. With invoket, you write a method and get all three for free. Your `tasks.ts` becomes a growing toolbox — every task documented, discoverable via `invt --help`, and callable by name with typed arguments.
+
+One script solves one problem. A `tasks.ts` file is a project's command centre.
 
 ## Installation
 
