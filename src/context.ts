@@ -17,6 +17,16 @@ export interface RunOptions {
   cwd?: string;
 }
 
+export class CommandError extends Error {
+  result: RunResult;
+
+  constructor(message: string, result: RunResult) {
+    super(message);
+    this.name = "CommandError";
+    this.result = result;
+  }
+}
+
 export class Context {
   cwd: string;
   private options: RunOptions;
@@ -70,11 +80,10 @@ export class Context {
     };
 
     if (!opts.warn && runResult.failed) {
-      const error = new Error(
+      throw new CommandError(
         `Command failed with exit code ${runResult.code}: ${command}`,
+        runResult,
       );
-      (error as any).result = runResult;
-      throw error;
     }
 
     // When streaming, output already went to terminal; otherwise write captured output
