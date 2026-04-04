@@ -1,74 +1,95 @@
 # invoket
 
-A TypeScript task runner for Bun that uses type annotations to parse CLI arguments.
-
-## Features
-
-- **Type-safe CLI parsing** — TypeScript types determine how arguments are parsed
-- **Zero configuration** — Just write a `Tasks` class with typed methods
-- **JSON support** — Object and array parameters are automatically parsed from JSON
-- **Namespace support** — Organize tasks with `db:migrate` style namespaces
-- **Rest parameters** — Support for `...args` variadic parameters
-- **Auto-generated help** — JSDoc descriptions become CLI help text
-
-## Installation
-
-```bash
-bun link invoket
-```
-
-## Quick Start
-
-```bash
-invt                    # Show help
-invt hello World 3      # Run task with args
-invt db:migrate up      # Run namespaced task
-invt --version          # Show version
-```
-
-## Writing Tasks
-
-Create a `tasks.ts` file with a `Tasks` class:
+TypeScript task runner for Bun. Write typed methods, get a CLI for free.
 
 ```typescript
 import { Context } from "invoket/context";
 
-interface SearchParams {
-  query: string;
-  limit?: number;
+export class Tasks {
+  /** Deploy to an environment */
+  async deploy(c: Context, env: string, force: boolean = false) {
+    await c.run(`deploy.sh ${env}${force ? " --force" : ""}`);
+  }
 }
+```
+
+```bash
+$ invt deploy prod --force
+```
+
+No config files. No argument parser boilerplate. Your TypeScript types *are* the CLI definition.
+
+## Why invoket?
+
+| | invoket | npm scripts | Makefile | ts-node scripts |
+|---|---------|------------|----------|----------------|
+| Type-safe args | Yes | No | No | Manual |
+| Auto-generated help | Yes | No | No | No |
+| Namespaces | Yes | Flat | No | Manual |
+| Shell execution | Built-in Context API | `child_process` | Built-in | `child_process` |
+| Setup | One `tasks.ts` file | `package.json` | `Makefile` | One file per script |
+
+## Installation
+
+```bash
+bun add -d invoket    # Add to project
+bun link invoket      # Or link globally for development
+```
+
+## Quick Start
+
+Create `tasks.ts`:
+
+```typescript
+import { Context } from "invoket/context";
 
 /**
- * Project build and deployment tasks
+ * My project tasks
  */
 export class Tasks {
-  /** Say hello with a name and repeat count */
-  async hello(c: Context, name: string, count: number) {
+  /**
+   * Say hello
+   * @flag name -n
+   * @flag count -c
+   */
+  async hello(c: Context, name: string, count: number = 1) {
     for (let i = 0; i < count; i++) {
       console.log(`Hello, ${name}!`);
     }
   }
 
   /** Search with JSON parameters */
-  async search(c: Context, entity: string, params: SearchParams) {
+  async search(c: Context, entity: string, params: { query: string; limit?: number }) {
     console.log(`Searching ${entity}: ${params.query}`);
   }
 
-  /** Install packages (rest params) */
+  /** Install packages */
   async install(c: Context, ...packages: string[]) {
     for (const pkg of packages) {
-      await c.run(`npm install ${pkg}`);
+      await c.run(`bun add ${pkg}`);
     }
   }
 }
 ```
 
+Run it:
+
+```bash
+invt                              # Show help
+invt hello World                  # Positional args
+invt hello -n World -c 3          # Short flags
+invt hello --name=World --count=3 # Long flags
+invt search users '{"query":"bob"}' # JSON params
+invt install react vue angular    # Rest params
+invt hello -h                     # Task-specific help
+```
+
 ## Namespaces
 
-Organize related tasks into namespaces:
+Group related tasks:
 
 ```typescript
-class DbNamespace {
+class Db {
   /** Run database migrations */
   async migrate(c: Context, direction: string = "up") {
     await c.run(`prisma migrate ${direction}`);
@@ -81,155 +102,108 @@ class DbNamespace {
 }
 
 export class Tasks {
-  db = new DbNamespace();
+  db = new Db();
 }
 ```
 
-Call with `invt db:migrate up` or `invt db.seed`.
-
-## Type Mapping
-
-| TypeScript | CLI Display | Example Input |
-|------------|-------------|---------------|
-| `name: string` | `<name>` | `hello` |
-| `name: string = "default"` | `[name]` | `hello` (optional) |
-| `count: number` | `<count>` | `42` |
-| `force: boolean` | `<force>` | `true` or `1` |
-| `params: SomeInterface` | `<params>` | `'{"key": "value"}'` |
-| `items: string[]` | `<items>` | `'["a", "b", "c"]'` |
-| `...args: string[]` | `[args...]` | `a b c` (variadic) |
-
-## Flag-Based Arguments
-
-Arguments can be passed positionally or as flags:
-
 ```bash
-invt hello World 2                    # positional
-invt hello --name=World --count=2     # long flags with =
-invt hello --name World --count 2     # long flags with space
-invt hello -n World -c 2              # short flags (requires @flag)
-invt hello World --count=2            # mixed positional and flags
-invt hello --count=2 World            # flags can appear anywhere
+invt db:migrate up    # colon separator
+invt db.seed          # dot separator also works
 ```
 
-### @flag Annotations
+## Arguments
 
-Define short flags and aliases with JSDoc `@flag`:
+### Type Mapping
+
+| TypeScript | CLI | Example |
+|------------|-----|---------|
+| `name: string` | `<name>` (required) | `hello` |
+| `name: string = "default"` | `[name]` (optional) | `hello` |
+| `count: number` | `<count>` | `42` |
+| `force: boolean` | `<force>` | `true`, `1`, `false`, `0` |
+| `params: SomeInterface` | `<params>` | `'{"key": "value"}'` |
+| `items: string[]` | `<items>` | `'["a", "b"]'` |
+| `...args: string[]` | `[args...]` (variadic) | `a b c` |
+
+### Flags
+
+Every parameter automatically gets a `--long` flag. Add `@flag` annotations for short flags and aliases:
 
 ```typescript
 /**
- * Deploy the application
  * @flag env -e --environment
  * @flag force -f
  */
 async deploy(c: Context, env: string, force: boolean = false) {}
 ```
 
-### Boolean Flags
-
 ```bash
-invt deploy --force                   # true
-invt deploy --force=true              # true
-invt deploy --no-force                # false (negation prefix)
+invt deploy prod                       # positional
+invt deploy --env=prod --force         # long flags
+invt deploy -e prod -f                 # short flags
+invt deploy --environment=prod         # alias
+invt deploy --no-force                 # boolean negation
+invt deploy --force=false              # explicit boolean
+invt install -- --not-a-flag           # -- stops flag parsing
 ```
 
-### Stop Flag Parsing
+Flags and positional args can be freely mixed in any order.
 
-```bash
-invt install -- --not-a-flag          # "--not-a-flag" treated as positional
-```
-
-## CLI Flags
+### CLI Flags
 
 | Flag | Description |
 |------|-------------|
-| `-h`, `--help` | Show help with all tasks |
-| `<task> -h` | Show help for a specific task |
-| `-l`, `--list` | List available tasks |
+| `-h`, `--help` | Show all tasks |
+| `<task> -h` | Help for a specific task |
+| `-l`, `--list` | List tasks |
 | `--version` | Show version |
-
-### Task-Specific Help
-
-Get detailed help for any task:
-
-```bash
-invt hello -h
-# Usage: invt hello <name> <count>
-#
-# Say hello with a name and repeat count
-#
-# Arguments:
-#   name            string     (required)
-#   count           number     (required)
-
-invt db:migrate --help
-# Usage: invt db:migrate [direction]
-#
-# Run database migrations
-#
-# Arguments:
-#   direction       string     (optional)
-```
 
 ## Context API
 
-Every task receives a `Context` object as the first parameter:
+Every task receives a `Context` for shell execution:
 
 ```typescript
 async deploy(c: Context, env: string) {
-  // Run shell commands
-  await c.run("npm run build");
-  
-  // Capture output
-  const { stdout } = await c.run("git rev-parse HEAD", { hide: true });
-  
-  // Ignore errors
-  await c.run("rm -f temp.txt", { warn: true });
-  
-  // Echo command before running
-  await c.run("npm test", { echo: true });
-  
-  // Change directory temporarily
-  for await (const _ of c.cd("subdir")) {
+  await c.run("npm run build");                          // run command
+  const { stdout } = await c.run("git rev-parse HEAD", { hide: true }); // capture output
+  await c.run("rm -f temp.txt", { warn: true });         // ignore errors
+  await c.run("npm test", { echo: true });                // echo before running
+  await c.run("make", { stream: true });                  // stream output in real-time
+
+  for await (const _ of c.cd("subdir")) {                 // temporary cd
     await c.run("ls");
   }
-  
-  // Sudo
-  await c.sudo("apt update");
-  
-  // Access config
-  console.log(c.config);  // { echo: false, warn: false, ... }
-  
-  // local() is alias for run()
-  await c.local("echo hello");
+
+  await c.sudo("apt update");                             // sudo prefix
+  await c.local("echo hello");                            // alias for run()
 }
 ```
 
-### Context Options
+### Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `echo` | boolean | false | Print command before execution |
 | `warn` | boolean | false | Don't throw on non-zero exit |
 | `hide` | boolean | false | Capture output instead of printing |
-| `stream` | boolean | false | Stream output in real-time (stdout/stderr not captured) |
-| `cwd` | string | process.cwd() | Working directory |
+| `stream` | boolean | false | Stream output in real-time |
+| `cwd` | string | `process.cwd()` | Working directory |
 
 ### RunResult
 
 ```typescript
 interface RunResult {
-  stdout: string;
+  stdout: string;    // captured output (empty when streaming)
   stderr: string;
   code: number;
-  ok: boolean;      // code === 0
-  failed: boolean;  // code !== 0
+  ok: boolean;       // code === 0
+  failed: boolean;   // code !== 0
 }
 ```
 
 ### Error Handling
 
-Failed commands throw a `CommandError` with the result attached:
+Failed commands throw `CommandError`:
 
 ```typescript
 import { CommandError } from "invoket/context";
@@ -238,27 +212,25 @@ try {
   await c.run("exit 1");
 } catch (e) {
   if (e instanceof CommandError) {
-    console.log(e.result.code);    // 1
-    console.log(e.result.stderr);  // error output
+    console.log(e.result.code);   // 1
+    console.log(e.result.stderr);
   }
 }
 ```
 
+Use `{ warn: true }` to suppress throws and inspect the result instead.
+
 ## Private Methods
 
-Methods starting with `_` are private and won't appear in help or be callable:
+Prefix with `_` to hide from CLI:
 
 ```typescript
 export class Tasks {
-  async publicTask(c: Context) { }
-  async _privateHelper(c: Context) { }  // Hidden
+  async publicTask(c: Context) {
+    this._helper();
+  }
+  async _helper() { }  // not discoverable, not callable via CLI
 }
-```
-
-## Testing
-
-```bash
-bun test
 ```
 
 ## Requirements

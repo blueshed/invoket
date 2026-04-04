@@ -1,269 +1,100 @@
 # CLAUDE.md
 
-This file provides context for AI assistants working on this codebase.
+Context for AI assistants working on this codebase.
 
-## Project Overview
+## What This Is
 
-**invoket** is a TypeScript task runner for Bun that parses CLI arguments based on TypeScript type annotations. It's inspired by Python's Invoke but uses TypeScript's type system instead of decorators.
+**invoket** — a Bun CLI tool where users write a `Tasks` class in TypeScript and the CLI parses the source code at runtime to extract method signatures, types, and JSDoc, then maps CLI arguments to typed function calls.
 
-## Architecture
+## Module Structure
 
 ```
-invoket/
-├── tasks.ts           # User-defined tasks (Tasks class)
-├── src/
-│   ├── cli.ts         # CLI entry point (thin, imports from parser.ts)
-│   ├── parser.ts      # All parsing logic, types, and exports
-│   └── context.ts     # Shell execution context + CommandError
-├── test/
-│   ├── cli.test.ts    # Main test suite (221 tests, imports from parser.ts)
-│   ├── context.test.ts
-│   └── integration/
-├── examples/
-│   └── tasks.ts       # Example tasks with @flag annotations
-└── package.json       # Binary: invt
+src/
+  parser.ts   — All logic: type extraction, arg parsing, coercion, discovery (560 lines)
+  cli.ts      — Entry point only: imports from parser.ts, runs main() (194 lines)
+  context.ts  — Shell execution: Context class, CommandError (111 lines)
 ```
 
-## Key Concepts
+**parser.ts** is the brain. **cli.ts** is the skeleton. **context.ts** is the runtime.
 
-### Type Extraction
+Tests import directly from `parser.ts`. There is no duplicated logic in tests.
 
-The CLI parses TypeScript source code to extract method signatures:
+## Data Flow
 
-```typescript
-async search(c: Context, entity: string, params: SearchParams)
+```
+tasks.ts source code
+  → discoverAllTasks(source)         # regex-parses class bodies for methods + JSDoc
+    → extractMethodsFromClass()      # finds async methodName(c: Context, ...) patterns
+    → parseParams()                  # extracts param names, types, defaults, @flag annotations
+    → extractFlagAnnotations()       # parses @flag JSDoc tags
+  → discoverRuntimeNamespaces()      # walks prototype chain for imported namespace classes
+
+CLI args
+  → parseCliArgs(args)               # splits into { positional, flags } Map
+  → resolveArgs(params, parsed)      # matches flags/positional to param metadata
+  → coerceArg(value, type)           # string → number/boolean/object/array
+  → method.call(thisArg, context, ...coercedArgs)
 ```
 
-Becomes:
-```
-search <entity> <params>
-  - entity: string (required)
-  - params: object (required, parsed as JSON)
-```
+## Key Design Decisions
 
-### Argument Parsing
+**Source parsing, not reflection.** We regex-parse the TypeScript source to get type info because Bun strips types at runtime. This means type info comes from source text, not runtime metadata.
 
-Arguments can be passed positionally or as flags:
+**Flags from params, not config.** Every parameter automatically gets `--paramName`. Short flags (`-f`) and aliases (`--environment`) come from `@flag` JSDoc annotations. No separate flag configuration object.
 
-```bash
-# All equivalent:
-invt hello World 2                    # positional
-invt hello --name=World --count=2     # long flags with =
-invt hello --name World --count 2     # long flags with space
-invt hello -n World -c 2              # short flags (requires @flag annotation)
-invt hello World --count=2            # mixed positional and flags
-invt hello --count=2 World            # flags can appear anywhere
-```
+**Positional alignment matters.** When `resolveArgs` skips an optional param, it pushes `undefined` into the result array so subsequent params land in the correct function argument positions (JavaScript default params handle `undefined` correctly).
 
-### Flag Annotations
+**Class body regex uses `\n}` terminator.** The pattern `class Foo { ... \n}` relies on the closing brace being at column 0. Works for all standard formatting. Nested braces inside methods are indented so they don't match.
 
-Define short flags and aliases using JSDoc `@flag` annotations:
+## Gotchas and Known Limitations
 
-```typescript
-/**
- * Deploy the application
- * @flag env -e --environment
- * @flag force -f
- */
-async deploy(c: Context, env: string, force: boolean = false) {}
-```
+- **Union types not supported.** `status: "pending" | "active"` detects as "object" and fails. Only `| null` is handled (makes param optional).
+- **Negative numbers as flag values.** `--count -5` treats `-5` as a flag, not a value. Use `--count=-5` instead.
+- **Inherited methods lose type info.** Methods from parent classes are callable but get empty params (no source to parse). All args treated as strings.
+- **`--no-flag=value` is ambiguous.** `--no-verbose` works (sets `verbose` to false). But `--no-verbose=false` hits the `--flag=value` branch first and creates a flag named `no-verbose` with string value `"false"`.
+- **Multi-char short flags are positional.** `-abc` is treated as a positional arg, not three flags. Only single-char `-f` is a flag.
 
-This enables:
-- `invt deploy -e prod -f`
-- `invt deploy --environment=prod --force`
-- `invt deploy prod` (positional still works)
+## Exported API (parser.ts)
 
-### Boolean Flags
+All public functions are exported. Key ones:
 
-Boolean parameters support special handling:
-- `--force` alone means `true`
-- `--force=true` or `--force=false` work explicitly
-- `--no-force` means `false` (negation prefix)
+| Function | Purpose |
+|----------|---------|
+| `discoverAllTasks(source)` | Parse source → root tasks + namespaces |
+| `discoverRuntimeNamespaces(instance, discovered)` | Find imported namespace classes at runtime |
+| `parseCliArgs(args)` | Split CLI args into `{ positional, flags }` |
+| `resolveArgs(params, parsed)` | Match flags/positional to params, coerce types |
+| `coerceArg(value, type)` | Convert string to typed value |
+| `parseParams(paramsStr, jsdoc)` | Parse parameter string into `ParamMeta[]` |
+| `extractFlagAnnotations(jsdoc)` | Parse `@flag` JSDoc annotations |
+| `extractMethodsFromClass(source, className)` | Extract methods from a class body |
+| `extractClassDoc(source)` | Get class-level JSDoc |
+| `parseCommand(command)` | Split `"db:migrate"` into `{ namespace, method }` |
+| `formatParam`, `formatFlagInfo` | Format for help display |
+| `printTaskList`, `showTaskHelp` | Print help output |
 
-### Stop Flag Parsing
+Types: `ParamType`, `ParamMeta`, `FlagMeta`, `TaskMeta`, `ParsedArgs`, `DiscoveredTasks`
 
-Use `--` to stop flag parsing (standard Unix convention):
-```bash
-invt install -- --not-a-flag    # "--not-a-flag" treated as positional
-```
-
-### Discovery Algorithm
-
-1. `discoverAllTasks(source)` - Main entry point
-2. `extractMethodsFromClass(source, className)` - Parse class body for methods
-3. `extractFlagAnnotations(jsdoc)` - Extract `@flag` annotations
-4. `extractClassDoc(source)` - Get class-level JSDoc for help header
-5. Namespace detection via `propName = new ClassName()` pattern
-
-### Type Coercion
-
-CLI string arguments are coerced based on detected types:
-
-| Detected Type | Coercion |
-|---------------|----------|
-| `string` | Pass through |
-| `number` | `Number(value)` with NaN check |
-| `boolean` | `"true"/"1"` → true, `"false"/"0"` → false |
-| `object` | `JSON.parse()` with object validation |
-| `array` | `JSON.parse()` with array validation |
-
-### Type Detection Rules
-
-The regex `(\w+\[\]|Record<[^>]+>|\{[^}]*\}|string|number|boolean|\w+)` matches types in this order:
-1. `string[]`, `number[]` → array
-2. `Record<K,V>` → object
-3. `{...}` inline objects → object
-4. `string`, `number`, `boolean` → primitives
-5. Any other identifier (interface names) → object
-
-Order matters: more specific patterns must come before `\w+`.
-
-### Rest Parameters
-
-Rest params (`...args: string[]`) are detected and:
-- Displayed as `[args...]` in help
-- Collect all remaining CLI arguments
-- Always optional (no minimum required)
-- Do not get flag metadata (must be positional)
-
-### Namespaces
-
-Namespaces are detected by finding class instantiation patterns:
-```typescript
-db = new DbNamespace();  // Creates db: namespace
-```
-
-Called via `invt db:migrate` or `invt db.migrate`.
-
-### Private Methods/Namespaces
-
-- Methods starting with `_` are excluded from discovery
-- Namespaces starting with `_` are excluded
-- Calling private methods returns explicit error message
-
-## Implemented Features
-
-| Feature | Status |
-|---------|--------|
-| Private methods (`_prefix`) | ✅ |
-| Namespace support (`db:migrate`) | ✅ |
-| Rest parameters (`...items`) | ✅ |
-| Prototype chain for inheritance | ✅ |
-| Class-level JSDoc | ✅ |
-| `--version` flag | ✅ |
-| `--help` / `-h` flag (general) | ✅ |
-| `<task> -h` (task-specific help) | ✅ |
-| `--list` / `-l` flag | ✅ |
-| Context.config property | ✅ |
-| Context.local() alias | ✅ |
-| Context.run() with options | ✅ |
-| Context.sudo() | ✅ |
-| Context.cd() async generator | ✅ |
-| Flag-based arguments (`--flag`) | ✅ |
-| Short flags (`-f`) via @flag | ✅ |
-| Flag aliases via @flag | ✅ |
-| Boolean negation (`--no-flag`) | ✅ |
-| Stop flag parsing (`--`) | ✅ |
-| Mixed positional and flags | ✅ |
-
-### Not Yet Implemented
-
-- `--init` flag - scaffolding for new projects
-- Plugin system - pre/post task hooks
-
-## Common Tasks
-
-### Adding a new primitive type
+## How to Add a Primitive Type
 
 1. Add to `ParamType` union in `parser.ts`
-2. Add detection in the type mapping `if/else` chain in `parseParams()`
+2. Add detection in the `if/else` chain in `parseParams()`
 3. Add coercion case in `coerceArg()` switch
 4. Add tests in `test/cli.test.ts`
-
-### Adding a new task
-
-Edit `tasks.ts`:
-```typescript
-/**
- * Description for help text
- * @flag param1 -p
- */
-async myTask(c: Context, param1: string, param2: SomeType) {
-  // implementation
-}
-```
-
-The CLI will automatically discover it.
-
-### Adding a namespace
-
-```typescript
-class MyNamespace {
-  /** Task description */
-  async myMethod(c: Context) { }
-}
-
-export class Tasks {
-  my = new MyNamespace();
-}
-```
 
 ## Testing
 
 ```bash
-bun test                    # Run all tests (221 tests)
-bun test --coverage        # Run with coverage report
-bun test --watch           # Watch mode
-bun test --grep "pattern"  # Run specific tests
+bun test               # 221 tests
+bun test --coverage    # 100% functions, 99.87% lines
 ```
 
-Coverage: 100% functions, 99.87% lines.
-
-Tests import directly from `src/parser.ts` — no duplicated logic in test files.
-
-Tests include:
-- Unit tests for `parseCliArgs`, `resolveArgs`, `coerceArg`
-- Unit tests for `extractFlagAnnotations`, `parseParams`
-- Unit tests for `discoverAllTasks`, `discoverRuntimeNamespaces`
-- Unit tests for `formatParam`, `formatFlagInfo`, `showTaskHelp`, `printTaskList`
-- Unit tests for `CommandError` class
-- Integration tests that run the actual CLI
+Tests import from `src/parser.ts`. One test-only helper exists: `extractTaskMeta()` — a 5-line wrapper around `extractMethodsFromClass` that lets tests pass bare method snippets without wrapping in a class.
 
 ## Publishing
 
-Publishing to npm is automated via GitHub Actions when you push a tag:
+Automated via GitHub Actions on tag push:
 
 ```bash
-# Update version in package.json, then:
-git add -A
-git commit -m "v0.1.5"
-git tag v0.1.5
-git push && git push --tags
-```
-
-The workflow (`.github/workflows/publish.yml`) runs tests and publishes with npm provenance.
-
-## Bun-Specific Features Used
-
-- `Bun.$` shell API for command execution
-- `Bun.file().text()` for reading source
-- `Bun.file().json()` for reading package.json
-- `Bun.resolveSync()` for path resolution
-- `bun:test` for testing
-- `bun link` for local binary installation
-
-## Binary
-
-The package exposes `invt` binary via package.json:
-```json
-{
-  "bin": {
-    "invt": "./src/cli.ts"
-  }
-}
-```
-
-After `bun link && bun link invoket`:
-```bash
-./node_modules/.bin/invt --help
+git tag v0.1.8 && git push --tags
 ```
