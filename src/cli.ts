@@ -289,21 +289,6 @@ function discoverRuntimeNamespaces(
   }
 }
 
-// Parse TypeScript source to extract method signatures and types (legacy, for compatibility)
-async function extractTaskMeta(source: string): Promise<Map<string, TaskMeta>> {
-  const { root, namespaced } = discoverAllTasks(source);
-
-  // Combine root and namespaced for backward compat
-  const all = new Map(root);
-  for (const [ns, methods] of namespaced) {
-    for (const [method, meta] of methods) {
-      all.set(method, meta); // This flattens - we'll fix in main()
-    }
-  }
-
-  return all;
-}
-
 // Convert CLI arg to typed value
 function coerceArg(value: string, type: ParamType): unknown {
   switch (type) {
@@ -495,7 +480,8 @@ function resolveArgs(params: ParamMeta[], parsed: ParsedArgs): unknown[] {
           `Missing required argument: <${param.name}> (${param.type})`,
         );
       }
-      continue; // Optional param not provided, skip and check remaining params
+      result.push(undefined); // Preserve position so subsequent params align correctly
+      continue;
     }
 
     // Coerce and add to result
@@ -530,6 +516,25 @@ function formatFlagInfo(param: ParamMeta): string {
     parts.push(...param.flag.aliases);
   }
   return parts.join(", ");
+}
+
+// Display task listing (used by both help and --list)
+function printTaskList(discovered: DiscoveredTasks): void {
+  for (const [name, meta] of discovered.root) {
+    const paramStr = meta.params.map(formatParam).join(" ");
+    const signature = paramStr ? `${name} ${paramStr}` : name;
+    console.log(`  ${signature}`);
+  }
+  for (const [ns, methods] of discovered.namespaced) {
+    console.log(`\n${ns}:`);
+    for (const [name, meta] of methods) {
+      const paramStr = meta.params.map(formatParam).join(" ");
+      const signature = paramStr
+        ? `${ns}:${name} ${paramStr}`
+        : `${ns}:${name}`;
+      console.log(`  ${signature}`);
+    }
+  }
 }
 
 // Display help for a specific task
@@ -612,26 +617,7 @@ export class Tasks {
     }
 
     console.log("Available tasks:\n");
-
-    // Root tasks
-    for (const [name, meta] of discovered.root) {
-      const paramStr = meta.params.map(formatParam).join(" ");
-      const signature = paramStr ? `${name} ${paramStr}` : name;
-      console.log(`  ${signature}`);
-    }
-
-    // Namespaced tasks
-    for (const [ns, methods] of discovered.namespaced) {
-      console.log(`\n${ns}:`);
-      for (const [name, meta] of methods) {
-        const paramStr = meta.params.map(formatParam).join(" ");
-        const signature = paramStr
-          ? `${ns}:${name} ${paramStr}`
-          : `${ns}:${name}`;
-        console.log(`  ${signature}`);
-      }
-    }
-
+    printTaskList(discovered);
     console.log("\nUsage: invt <task> [args...]");
     console.log("       invt <task> -h   Show help for a specific task");
     return;
@@ -640,25 +626,7 @@ export class Tasks {
   // List flag
   if (args[0] === "-l" || args[0] === "--list") {
     console.log("Available tasks:\n");
-
-    // Root tasks
-    for (const [name, meta] of discovered.root) {
-      const paramStr = meta.params.map(formatParam).join(" ");
-      const signature = paramStr ? `${name} ${paramStr}` : name;
-      console.log(`  ${signature}`);
-    }
-
-    // Namespaced tasks
-    for (const [ns, methods] of discovered.namespaced) {
-      console.log(`\n${ns}:`);
-      for (const [name, meta] of methods) {
-        const paramStr = meta.params.map(formatParam).join(" ");
-        const signature = paramStr
-          ? `${ns}:${name} ${paramStr}`
-          : `${ns}:${name}`;
-        console.log(`  ${signature}`);
-      }
-    }
+    printTaskList(discovered);
     return;
   }
 

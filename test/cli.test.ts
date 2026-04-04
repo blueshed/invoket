@@ -1264,7 +1264,8 @@ function resolveArgs(
           `Missing required argument: <${param.name}> (${param.type})`,
         );
       }
-      continue; // Optional param not provided, skip and check remaining params
+      result.push(undefined); // Preserve position so subsequent params align correctly
+      continue;
     }
 
     // Coerce and add to result
@@ -1436,7 +1437,8 @@ describe("resolveArgs", () => {
       flags: new Map(),
     };
     const result = resolveArgs(params, parsed, coerceArg);
-    expect(result).toEqual(["World"]);
+    // undefined preserves position; JS default params handle it correctly
+    expect(result).toEqual(["World", undefined]);
   });
 
   test("handles rest parameters", () => {
@@ -1508,7 +1510,8 @@ describe("resolveArgs", () => {
       flags: new Map<string, string | boolean>([["required", "42"]]),
     };
     const result = resolveArgs(params, parsed, coerceArg);
-    expect(result).toEqual(["World", 42]);
+    // undefined preserves position so "required" lands in the correct arg slot
+    expect(result).toEqual(["World", undefined, 42]);
   });
 
   test("skips multiple optional params and resolves later required param", () => {
@@ -1522,7 +1525,7 @@ describe("resolveArgs", () => {
       flags: new Map<string, string | boolean>([["c", "7"]]),
     };
     const result = resolveArgs(params, parsed, coerceArg);
-    expect(result).toEqual([7]);
+    expect(result).toEqual([undefined, undefined, 7]);
   });
 
   test("resolves optional param via flag while positional fills required", () => {
