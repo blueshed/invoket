@@ -75,6 +75,72 @@ All public functions are exported. Key ones:
 
 Types: `ParamType`, `ParamMeta`, `FlagMeta`, `TaskMeta`, `ParsedArgs`, `DiscoveredTasks`
 
+## Writing tasks.ts
+
+When helping a user write tasks, follow these rules:
+
+**Every method must** have `async`, a JSDoc comment, and `c: Context` as the first parameter:
+
+```typescript
+import { Context } from "invoket/context";
+
+export class Tasks {
+  /** Description becomes help text */
+  async myTask(c: Context, requiredArg: string, optionalArg: number = 10) {
+    await c.run(`echo ${requiredArg}`);
+  }
+}
+```
+
+**Parameter types map directly to CLI behavior:**
+- `string` — passed through as-is
+- `number` — parsed with `Number()`, rejects NaN
+- `boolean` — accepts `true/false/1/0` on CLI, also supports `--flag` (true) and `--no-flag` (false)
+- Interface/Record/`{...}` — user must pass JSON string: `'{"key":"val"}'`
+- `type[]` — user must pass JSON array: `'["a","b"]'`
+- `...args: string[]` — collects all remaining positional args
+- `| null` suffix — makes the param optional
+
+**Short flags require `@flag` annotations in JSDoc:**
+
+```typescript
+/**
+ * Deploy the app
+ * @flag env -e --environment
+ * @flag force -f
+ */
+async deploy(c: Context, env: string, force: boolean = false) {}
+```
+
+Without `@flag`, only `--paramName` long flags work (auto-generated).
+
+**Namespaces use class instantiation in Tasks:**
+
+```typescript
+class Db {
+  /** Run migrations */
+  async migrate(c: Context, direction: string = "up") {}
+}
+
+export class Tasks {
+  db = new Db();  // creates db:migrate namespace
+}
+```
+
+The property name becomes the namespace. Prefix with `_` to hide.
+
+**Methods without JSDoc are not discovered.** Every public task needs a `/** */` comment.
+
+**Context API essentials:**
+- `c.run(cmd)` — run shell command, throws on failure
+- `c.run(cmd, { warn: true })` — don't throw on failure
+- `c.run(cmd, { hide: true })` — capture output instead of printing
+- `c.run(cmd, { stream: true })` — real-time output streaming
+- `c.run(cmd, { echo: true })` — print command before running
+- `c.sudo(cmd)` — prefix with `sudo`
+- `c.cd(dir)` — async generator for temporary directory change
+- `c.local(cmd)` — alias for `c.run(cmd)`
+
 ## How to Add a Primitive Type
 
 1. Add to `ParamType` union in `parser.ts`
