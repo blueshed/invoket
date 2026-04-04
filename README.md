@@ -229,6 +229,252 @@ export class Tasks {
 }
 ```
 
+## Patterns
+
+### Project setup
+
+```typescript
+/** Bootstrap dev environment */
+async setup(c: Context) {
+  await c.run("bun install");
+  await c.run("cp .env.example .env", { warn: true });
+  await c.run("bun run db:migrate");
+  console.log("Ready to go!");
+}
+```
+
+### Git workflow
+
+```typescript
+/**
+ * Commit and push current branch
+ * @flag message -m
+ */
+async ship(c: Context, message: string) {
+  const { stdout } = await c.run("git branch --show-current", { hide: true });
+  await c.run("git add -A");
+  await c.run(`git commit -m "${message}"`);
+  await c.run(`git push -u origin ${stdout.trim()}`);
+}
+```
+
+### Run with fallback
+
+```typescript
+/** Lint and fix */
+async lint(c: Context) {
+  const result = await c.run("eslint . --fix", { warn: true, hide: true });
+  if (result.failed) {
+    console.log("Lint errors remain:");
+    console.log(result.stdout);
+  }
+}
+```
+
+### Capture and transform
+
+```typescript
+/** Show outdated deps */
+async deps(c: Context) {
+  const { stdout } = await c.run("bun outdated --json", { hide: true, warn: true });
+  const deps = JSON.parse(stdout || "[]");
+  for (const d of deps) console.log(`${d.name}: ${d.current} → ${d.latest}`);
+}
+```
+
+### Scaffold files
+
+```typescript
+/** @flag name -n */
+async component(c: Context, name: string) {
+  const upper = name[0].toUpperCase() + name.slice(1);
+  await c.run(`mkdir -p src/components/${name}`);
+  await c.run(`cat > src/components/${name}/index.tsx << 'EOF'
+export function ${upper}() {
+  return <div>${upper}</div>;
+}
+EOF`);
+  console.log(`Created src/components/${name}/index.tsx`);
+}
+```
+
+## Agentic Tools
+
+invoket shines as a toolbox for AI agents. Instead of writing ad-hoc scripts each session, the agent adds methods to `tasks.ts` that persist across sessions. `invt --help` shows what tools are available. The file becomes the project's growing command centre.
+
+### Memory — persist context across sessions
+
+```typescript
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+
+class Memory {
+  private dir = ".memory";
+
+  private ensure() {
+    if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true });
+  }
+
+  /** Store a value by key */
+  async store(c: Context, key: string, ...value: string[]) {
+    this.ensure();
+    writeFileSync(`${this.dir}/${key}.md`, value.join(" "));
+    console.log(`Stored: ${key}`);
+  }
+
+  /** Recall a value by key */
+  async recall(c: Context, key: string) {
+    const path = `${this.dir}/${key}.md`;
+    if (!existsSync(path)) { console.log(`Not found: ${key}`); return; }
+    console.log(readFileSync(path, "utf-8"));
+  }
+
+  /** List all stored keys */
+  async list(c: Context) {
+    this.ensure();
+    const { stdout } = await c.run(`ls ${this.dir}`, { hide: true, warn: true });
+    console.log(stdout || "(empty)");
+  }
+}
+
+export class Tasks {
+  memory = new Memory();
+}
+```
+
+```bash
+invt memory:store arch "Monorepo with packages/api and packages/web"
+invt memory:recall arch
+invt memory:list
+```
+
+### Task planning — break work into steps
+
+```typescript
+import { existsSync, readFileSync, writeFileSync } from "fs";
+
+class Plan {
+  private file = ".plan.json";
+
+  private load(): { task: string; done: boolean }[] {
+    if (!existsSync(this.file)) return [];
+    return JSON.parse(readFileSync(this.file, "utf-8"));
+  }
+
+  private save(tasks: { task: string; done: boolean }[]) {
+    writeFileSync(this.file, JSON.stringify(tasks, null, 2));
+  }
+
+  /** Add a step to the plan */
+  async add(c: Context, ...task: string[]) {
+    const tasks = this.load();
+    tasks.push({ task: task.join(" "), done: false });
+    this.save(tasks);
+    console.log(`Added step ${tasks.length}: ${task.join(" ")}`);
+  }
+
+  /** Mark step as done */
+  async done(c: Context, step: number) {
+    const tasks = this.load();
+    tasks[step - 1].done = true;
+    this.save(tasks);
+    console.log(`Done: ${tasks[step - 1].task}`);
+  }
+
+  /** Show the plan */
+  async show(c: Context) {
+    const tasks = this.load();
+    if (!tasks.length) { console.log("No plan yet."); return; }
+    for (const [i, t] of tasks.entries()) {
+      console.log(`${t.done ? "✓" : " "} ${i + 1}. ${t.task}`);
+    }
+  }
+
+  /** Clear the plan */
+  async clear(c: Context) {
+    this.save([]);
+    console.log("Plan cleared.");
+  }
+}
+
+export class Tasks {
+  plan = new Plan();
+}
+```
+
+```bash
+invt plan:add "Set up database schema"
+invt plan:add "Write API endpoints"
+invt plan:add "Add tests"
+invt plan:show
+invt plan:done 1
+```
+
+### Session journal — log decisions
+
+```typescript
+import { appendFileSync, existsSync, readFileSync } from "fs";
+
+class Journal {
+  private file = ".journal.md";
+
+  /** Log a decision or finding */
+  async log(c: Context, ...entry: string[]) {
+    const ts = new Date().toISOString().slice(0, 16);
+    appendFileSync(this.file, `\n## ${ts}\n\n${entry.join(" ")}\n`);
+    console.log("Logged.");
+  }
+
+  /** Show recent entries */
+  async show(c: Context) {
+    if (!existsSync(this.file)) { console.log("No journal yet."); return; }
+    console.log(readFileSync(this.file, "utf-8"));
+  }
+}
+
+export class Tasks {
+  journal = new Journal();
+}
+```
+
+```bash
+invt journal:log "Chose Postgres over SQLite for concurrent writes"
+invt journal:show
+```
+
+### Codebase search — structured context gathering
+
+```typescript
+class Search {
+  /** Find files matching a pattern */
+  async files(c: Context, pattern: string) {
+    await c.run(`find . -name "${pattern}" -not -path "*/node_modules/*"`, { stream: true });
+  }
+
+  /** Search code for a pattern */
+  async code(c: Context, pattern: string, ...glob: string[]) {
+    const g = glob.length ? `--glob '${glob.join("' --glob '")}'` : "";
+    await c.run(`rg "${pattern}" ${g} --type-not binary`, { stream: true, warn: true });
+  }
+
+  /** Summarise project structure */
+  async tree(c: Context) {
+    await c.run("find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' | head -50", { stream: true });
+  }
+}
+
+export class Tasks {
+  search = new Search();
+}
+```
+
+```bash
+invt search:code "async.*Context" "*.ts"
+invt search:files "*.test.ts"
+invt search:tree
+```
+
+These tasks persist in the project. Every session, the agent starts with `invt --help` and has its full toolbox ready.
+
 ## Requirements
 
 - Bun >= 1.0.0
