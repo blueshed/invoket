@@ -8,9 +8,16 @@ import {
   parseParams,
   parseCliArgs,
   resolveArgs,
+  discoverAllTasks,
+  discoverRuntimeNamespaces,
+  formatParam,
+  formatFlagInfo,
+  showTaskHelp,
+  printTaskList,
   type ParamType,
   type ParamMeta,
   type TaskMeta,
+  type DiscoveredTasks,
 } from "../src/parser";
 
 // Wrapper: extract methods from a source snippet as if it were class Tasks
@@ -597,6 +604,219 @@ describe("rest parameters (spec section 3)", () => {
       )
       .join(" ");
     expect(formatted).toBe("[items...]");
+  });
+});
+
+// =============================================================================
+// DISCOVERY, FORMATTING, AND DISPLAY TESTS
+// =============================================================================
+
+describe("discoverAllTasks", () => {
+  test("discovers root methods and namespaces from source", () => {
+    const source = `
+class DbNamespace {
+  /** Run migrations */
+  async migrate(c: Context, direction: string = "up") {}
+}
+
+export class Tasks {
+  db = new DbNamespace();
+
+  /** Say hello */
+  async hello(c: Context, name: string) {}
+}
+`;
+    const discovered = discoverAllTasks(source);
+    expect(discovered.root.has("hello")).toBe(true);
+    expect(discovered.namespaced.has("db")).toBe(true);
+    expect(discovered.namespaced.get("db")!.has("migrate")).toBe(true);
+  });
+
+  test("skips private namespaces", () => {
+    const source = `
+class Secret {
+  /** Hidden */
+  async hidden(c: Context) {}
+}
+
+export class Tasks {
+  _secret = new Secret();
+
+  /** Public */
+  async pub(c: Context) {}
+}
+`;
+    const discovered = discoverAllTasks(source);
+    expect(discovered.root.has("pub")).toBe(true);
+    expect(discovered.namespaced.has("_secret")).toBe(false);
+  });
+
+  test("extracts class doc", () => {
+    const source = `
+/**
+ * My project tasks
+ */
+export class Tasks {
+  /** Hello */
+  async hello(c: Context) {}
+}
+`;
+    const discovered = discoverAllTasks(source);
+    expect(discovered.classDoc).toBe("My project tasks");
+  });
+});
+
+describe("discoverRuntimeNamespaces", () => {
+  test("discovers runtime namespace methods", () => {
+    class RuntimeNs {
+      async action() {}
+      async _private() {}
+    }
+    class Tasks {
+      runtime = new RuntimeNs();
+    }
+    const instance = new Tasks();
+    const discovered: DiscoveredTasks = {
+      root: new Map(),
+      namespaced: new Map(),
+      classDoc: null,
+    };
+    discoverRuntimeNamespaces(instance, discovered);
+    expect(discovered.namespaced.has("runtime")).toBe(true);
+    expect(discovered.namespaced.get("runtime")!.has("action")).toBe(true);
+    expect(discovered.namespaced.get("runtime")!.has("_private")).toBe(false);
+  });
+
+  test("skips already discovered namespaces", () => {
+    class Ns {
+      async method() {}
+    }
+    class Tasks {
+      ns = new Ns();
+    }
+    const discovered: DiscoveredTasks = {
+      root: new Map(),
+      namespaced: new Map([["ns", new Map([["existing", { description: "already here", params: [] }]])]]),
+      classDoc: null,
+    };
+    discoverRuntimeNamespaces(new Tasks(), discovered);
+    // Should keep the existing entry, not overwrite
+    expect(discovered.namespaced.get("ns")!.has("existing")).toBe(true);
+    expect(discovered.namespaced.get("ns")!.has("method")).toBe(false);
+  });
+
+  test("skips private and non-object properties", () => {
+    class Tasks {
+      _hidden = { async secret() {} };
+      count = 42;
+      items = [1, 2, 3];
+    }
+    const discovered: DiscoveredTasks = {
+      root: new Map(),
+      namespaced: new Map(),
+      classDoc: null,
+    };
+    discoverRuntimeNamespaces(new Tasks(), discovered);
+    expect(discovered.namespaced.size).toBe(0);
+  });
+});
+
+describe("formatParam", () => {
+  test("formats required param", () => {
+    expect(formatParam({ name: "name", type: "string", required: true, isRest: false })).toBe("<name>");
+  });
+
+  test("formats optional param", () => {
+    expect(formatParam({ name: "count", type: "number", required: false, isRest: false })).toBe("[count]");
+  });
+
+  test("formats rest param", () => {
+    expect(formatParam({ name: "items", type: "array", required: false, isRest: true })).toBe("[items...]");
+  });
+});
+
+describe("formatFlagInfo", () => {
+  test("formats long flag only", () => {
+    expect(formatFlagInfo({ name: "n", type: "string", required: true, isRest: false, flag: { long: "--name" } })).toBe("--name");
+  });
+
+  test("formats long + short flag", () => {
+    expect(formatFlagInfo({ name: "n", type: "string", required: true, isRest: false, flag: { long: "--name", short: "-n" } })).toBe("--name, -n");
+  });
+
+  test("formats long + short + aliases", () => {
+    expect(formatFlagInfo({ name: "e", type: "string", required: true, isRest: false, flag: { long: "--env", short: "-e", aliases: ["--environment"] } })).toBe("--env, -e, --environment");
+  });
+
+  test("returns empty for rest param", () => {
+    expect(formatFlagInfo({ name: "items", type: "array", required: false, isRest: true })).toBe("");
+  });
+
+  test("returns empty for param without flag", () => {
+    expect(formatFlagInfo({ name: "x", type: "string", required: true, isRest: false })).toBe("");
+  });
+});
+
+describe("printTaskList", () => {
+  test("prints root and namespaced tasks", () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: any[]) => logs.push(args.join(" "));
+
+    const discovered: DiscoveredTasks = {
+      root: new Map([["hello", { description: "Say hi", params: [{ name: "name", type: "string" as ParamType, required: true, isRest: false, flag: { long: "--name" } }] }]]),
+      namespaced: new Map([["db", new Map([["migrate", { description: "Run migrations", params: [] }]])]]),
+      classDoc: null,
+    };
+    printTaskList(discovered);
+    console.log = origLog;
+
+    expect(logs.some(l => l.includes("hello <name>"))).toBe(true);
+    expect(logs.some(l => l.includes("db:"))).toBe(true);
+    expect(logs.some(l => l.includes("db:migrate"))).toBe(true);
+  });
+});
+
+describe("showTaskHelp", () => {
+  test("prints usage, description, and arguments", () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: any[]) => logs.push(args.join(" "));
+
+    showTaskHelp("deploy", {
+      description: "Deploy the app",
+      params: [
+        { name: "env", type: "string", required: true, isRest: false, flag: { long: "--env", short: "-e" } },
+        { name: "force", type: "boolean", required: false, isRest: false, flag: { long: "--force" } },
+      ],
+    });
+    console.log = origLog;
+
+    const output = logs.join("\n");
+    expect(output).toContain("Usage: invt deploy <env> [force]");
+    expect(output).toContain("Deploy the app");
+    expect(output).toContain("Arguments:");
+    expect(output).toContain("--env, -e");
+    expect(output).toContain("--force");
+  });
+
+  test("prints usage without args for paramless task", () => {
+    const logs: string[] = [];
+    const origLog = console.log;
+    console.log = (...args: any[]) => logs.push(args.join(" "));
+
+    showTaskHelp("build", { description: "", params: [] });
+    console.log = origLog;
+
+    expect(logs[0]).toContain("Usage: invt build");
+    expect(logs.join("\n")).not.toContain("Arguments:");
+  });
+});
+
+describe("parseCommand edge cases", () => {
+  test("handles both colon and dot — uses first separator", () => {
+    expect(parseCommand("a.b:c")).toEqual({ namespace: "a", method: "b:c" });
+    expect(parseCommand("a:b.c")).toEqual({ namespace: "a", method: "b.c" });
   });
 });
 

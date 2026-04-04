@@ -250,9 +250,9 @@ describe("Context", () => {
   });
 
   describe("sudo()", () => {
-    test("should prefix command with sudo -n (non-interactive)", async () => {
-      // Use -n flag to avoid password prompt, will fail but proves sudo prefix works
-      const result = await context.run("sudo -n echo 'test' 2>&1 || true", {
+    test("should prefix command with sudo", async () => {
+      // sudo will fail in test env but we can verify it's called
+      const result = await context.sudo("echo 'test'", {
         hide: true,
         warn: true,
       });
