@@ -300,180 +300,146 @@ EOF`);
 
 ## Agentic Tools
 
-invoket shines as a toolbox for AI agents. Instead of writing ad-hoc scripts each session, the agent adds methods to `tasks.ts` that persist across sessions. `invt --help` shows what tools are available. The file becomes the project's growing command centre.
+AI agents like Claude Code have built-in tools for searching files, reading code, and running commands. What they lack is **project context** — the state of migrations, the history of decisions, the shape of your API, which tests are flaky and why. That knowledge lives in developers' heads, scattered across commits, issues, and Slack threads.
 
-### Memory — persist context across sessions
+invoket lets you build a **structured, queryable project knowledge base** that agents can read and write through the same CLI interface humans use. Bun's built-in SQLite makes this trivial — no external database, no setup, just a `.ctx.db` file that travels with the project.
 
-```typescript
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-
-class Memory {
-  private dir = ".memory";
-
-  private ensure() {
-    if (!existsSync(this.dir)) mkdirSync(this.dir, { recursive: true });
-  }
-
-  /** Store a value by key */
-  async store(c: Context, key: string, ...value: string[]) {
-    this.ensure();
-    writeFileSync(`${this.dir}/${key}.md`, value.join(" "));
-    console.log(`Stored: ${key}`);
-  }
-
-  /** Recall a value by key */
-  async recall(c: Context, key: string) {
-    const path = `${this.dir}/${key}.md`;
-    if (!existsSync(path)) { console.log(`Not found: ${key}`); return; }
-    console.log(readFileSync(path, "utf-8"));
-  }
-
-  /** List all stored keys */
-  async list(c: Context) {
-    this.ensure();
-    const { stdout } = await c.run(`ls ${this.dir}`, { hide: true, warn: true });
-    console.log(stdout || "(empty)");
-  }
-}
-
-export class Tasks {
-  memory = new Memory();
-}
-```
-
-```bash
-invt memory:store arch "Monorepo with packages/api and packages/web"
-invt memory:recall arch
-invt memory:list
-```
-
-### Task planning — break work into steps
+### Project context — a SQLite-backed knowledge base
 
 ```typescript
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { Context } from "invoket/context";
+import { Database } from "bun:sqlite";
 
-class Plan {
-  private file = ".plan.json";
+class Ctx {
+  private db: Database;
 
-  private load(): { task: string; done: boolean }[] {
-    if (!existsSync(this.file)) return [];
-    return JSON.parse(readFileSync(this.file, "utf-8"));
+  constructor() {
+    this.db = new Database(".ctx.db", { create: true });
+    this.db.run(`CREATE TABLE IF NOT EXISTS context (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now'))
+    )`);
+    this.db.run(`CREATE TABLE IF NOT EXISTS decisions (
+      id INTEGER PRIMARY KEY,
+      subject TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      rationale TEXT,
+      status TEXT DEFAULT 'active',
+      created_at TEXT DEFAULT (datetime('now'))
+    )`);
   }
 
-  private save(tasks: { task: string; done: boolean }[]) {
-    writeFileSync(this.file, JSON.stringify(tasks, null, 2));
+  /** Store a key-value fact about the project */
+  async set(c: Context, key: string, ...value: string[]) {
+    this.db.run(
+      `INSERT OR REPLACE INTO context (key, value, updated_at)
+       VALUES (?, ?, datetime('now'))`,
+      [key, value.join(" ")]
+    );
+    console.log(`Set: ${key}`);
   }
 
-  /** Add a step to the plan */
-  async add(c: Context, ...task: string[]) {
-    const tasks = this.load();
-    tasks.push({ task: task.join(" "), done: false });
-    this.save(tasks);
-    console.log(`Added step ${tasks.length}: ${task.join(" ")}`);
+  /** Retrieve a fact */
+  async get(c: Context, key: string) {
+    const row = this.db.query("SELECT value, updated_at FROM context WHERE key = ?").get(key) as any;
+    if (!row) { console.log(`Not found: ${key}`); return; }
+    console.log(`${row.value}  (${row.updated_at})`);
   }
 
-  /** Mark step as done */
-  async done(c: Context, step: number) {
-    const tasks = this.load();
-    tasks[step - 1].done = true;
-    this.save(tasks);
-    console.log(`Done: ${tasks[step - 1].task}`);
+  /** Search facts by keyword */
+  async search(c: Context, ...terms: string[]) {
+    const pattern = `%${terms.join(" ")}%`;
+    const rows = this.db.query(
+      "SELECT key, value FROM context WHERE key LIKE ? OR value LIKE ?"
+    ).all(pattern, pattern) as any[];
+    for (const r of rows) console.log(`${r.key}: ${r.value}`);
   }
 
-  /** Show the plan */
-  async show(c: Context) {
-    const tasks = this.load();
-    if (!tasks.length) { console.log("No plan yet."); return; }
-    for (const [i, t] of tasks.entries()) {
-      console.log(`${t.done ? "✓" : " "} ${i + 1}. ${t.task}`);
+  /** Record an architectural decision */
+  async decide(c: Context, subject: string, decision: string, ...rationale: string[]) {
+    this.db.run(
+      "INSERT INTO decisions (subject, decision, rationale) VALUES (?, ?, ?)",
+      [subject, decision, rationale.join(" ")]
+    );
+    console.log(`Recorded: ${subject}`);
+  }
+
+  /** List active decisions */
+  async decisions(c: Context) {
+    const rows = this.db.query(
+      "SELECT id, subject, decision, rationale FROM decisions WHERE status = 'active' ORDER BY created_at DESC"
+    ).all() as any[];
+    for (const r of rows) {
+      console.log(`#${r.id} ${r.subject}: ${r.decision}`);
+      if (r.rationale) console.log(`   ${r.rationale}`);
     }
   }
 
-  /** Clear the plan */
-  async clear(c: Context) {
-    this.save([]);
-    console.log("Plan cleared.");
+  /** Dump all context as JSON */
+  async dump(c: Context) {
+    const facts = this.db.query("SELECT key, value FROM context ORDER BY key").all();
+    const decisions = this.db.query("SELECT * FROM decisions WHERE status = 'active'").all();
+    console.log(JSON.stringify({ facts, decisions }, null, 2));
   }
 }
 
 export class Tasks {
-  plan = new Plan();
+  ctx = new Ctx();
 }
 ```
 
 ```bash
-invt plan:add "Set up database schema"
-invt plan:add "Write API endpoints"
-invt plan:add "Add tests"
-invt plan:show
-invt plan:done 1
+# Store project facts
+invt ctx:set db "Postgres 16 on Supabase, migrations in prisma/"
+invt ctx:set api "REST with /api/v2 prefix, auth via JWT middleware"
+invt ctx:set deploy "Fly.io, auto-deploy on push to main"
+
+# Record decisions with rationale
+invt ctx:decide auth "JWT in httpOnly cookies" "Chose over localStorage for XSS protection"
+invt ctx:decide orm "Prisma over Drizzle" "Team familiarity, existing migrations"
+
+# Query context
+invt ctx:get db
+invt ctx:search auth
+invt ctx:decisions
+
+# Dump everything for agent context
+invt ctx:dump
 ```
 
-### Session journal — log decisions
+An agent starts a session with `invt ctx:dump` and immediately has structured project knowledge — not flat markdown, not grep results, but queryable facts and decisions with timestamps.
+
+### Why SQLite?
+
+Bun bundles SQLite natively — `import { Database } from "bun:sqlite"` just works. No dependencies, no server, no config. The `.ctx.db` file is a single file you can `.gitignore` or commit. You can extend the schema as the project grows: add tables for endpoints, test history, deployment logs, whatever your project needs.
+
+### Growing the schema
+
+The example above is a starting point. A real project might track more:
 
 ```typescript
-import { appendFileSync, existsSync, readFileSync } from "fs";
+// Track API endpoints and their status
+this.db.run(`CREATE TABLE IF NOT EXISTS endpoints (
+  path TEXT PRIMARY KEY,
+  method TEXT,
+  handler TEXT,
+  auth TEXT DEFAULT 'required',
+  status TEXT DEFAULT 'active'
+)`);
 
-class Journal {
-  private file = ".journal.md";
-
-  /** Log a decision or finding */
-  async log(c: Context, ...entry: string[]) {
-    const ts = new Date().toISOString().slice(0, 16);
-    appendFileSync(this.file, `\n## ${ts}\n\n${entry.join(" ")}\n`);
-    console.log("Logged.");
-  }
-
-  /** Show recent entries */
-  async show(c: Context) {
-    if (!existsSync(this.file)) { console.log("No journal yet."); return; }
-    console.log(readFileSync(this.file, "utf-8"));
-  }
-}
-
-export class Tasks {
-  journal = new Journal();
-}
+// Track test health
+this.db.run(`CREATE TABLE IF NOT EXISTS test_runs (
+  id INTEGER PRIMARY KEY,
+  suite TEXT,
+  passed INTEGER,
+  failed INTEGER,
+  skipped INTEGER,
+  ran_at TEXT DEFAULT (datetime('now'))
+)`);
 ```
 
-```bash
-invt journal:log "Chose Postgres over SQLite for concurrent writes"
-invt journal:show
-```
-
-### Codebase search — structured context gathering
-
-```typescript
-class Search {
-  /** Find files matching a pattern */
-  async files(c: Context, pattern: string) {
-    await c.run(`find . -name "${pattern}" -not -path "*/node_modules/*"`, { stream: true });
-  }
-
-  /** Search code for a pattern */
-  async code(c: Context, pattern: string, ...glob: string[]) {
-    const g = glob.length ? `--glob '${glob.join("' --glob '")}'` : "";
-    await c.run(`rg "${pattern}" ${g} --type-not binary`, { stream: true, warn: true });
-  }
-
-  /** Summarise project structure */
-  async tree(c: Context) {
-    await c.run("find . -type f -not -path '*/node_modules/*' -not -path '*/.git/*' | head -50", { stream: true });
-  }
-}
-
-export class Tasks {
-  search = new Search();
-}
-```
-
-```bash
-invt search:code "async.*Context" "*.ts"
-invt search:files "*.test.ts"
-invt search:tree
-```
-
-These tasks persist in the project. Every session, the agent starts with `invt --help` and has its full toolbox ready.
+The namespace class is the interface. The schema is yours to shape around what your project actually needs to remember.
 
 ## Requirements
 

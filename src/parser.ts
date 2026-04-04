@@ -219,6 +219,47 @@ export function parseParams(
   return params;
 }
 
+// Extract import statements: maps imported identifiers to their module paths
+export function extractImports(
+  source: string,
+): Map<string, string> {
+  const imports = new Map<string, string>();
+  const pattern =
+    /import\s+(?!\s*type\s)(?:\{([^}]+)\}|(\w+))\s+from\s+["']([^"']+)["']/g;
+  let match;
+  while ((match = pattern.exec(source)) !== null) {
+    const [, namedImports, defaultImport, importPath] = match;
+    if (namedImports) {
+      for (const spec of namedImports.split(",")) {
+        const parts = spec.trim().split(/\s+as\s+/);
+        const localName = parts[parts.length - 1].trim();
+        if (localName) imports.set(localName, importPath);
+      }
+    }
+    if (defaultImport) {
+      imports.set(defaultImport, importPath);
+    }
+  }
+  return imports;
+}
+
+// Find namespace assignments whose class wasn't found in the local source
+export function findUnresolvedNamespaces(
+  source: string,
+  discovered: DiscoveredTasks,
+): Map<string, string> {
+  const unresolved = new Map<string, string>(); // propName -> className
+  const nsPattern = /(\w+)\s*=\s*new\s+(\w+)\s*\(\s*\)/g;
+  let match;
+  while ((match = nsPattern.exec(source)) !== null) {
+    const [, propName, className] = match;
+    if (propName.startsWith("_")) continue;
+    if (discovered.namespaced.has(propName)) continue;
+    unresolved.set(propName, className);
+  }
+  return unresolved;
+}
+
 // Discover all tasks including namespaced ones (source parsing only)
 export function discoverAllTasks(source: string): DiscoveredTasks {
   const root = extractMethodsFromClass(source, "Tasks");

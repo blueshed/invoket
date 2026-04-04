@@ -458,6 +458,104 @@ export class Tasks {
     });
   });
 
+  describe("Imported Namespaces", () => {
+    test("should resolve types from imported namespace class", async () => {
+      // Write the namespace class in a separate file
+      writeFileSync(
+        join(TEST_DIR, "db-tasks.ts"),
+        `import { Context } from "${CONTEXT_PATH}";
+
+export class DbTasks {
+  /** Run database migrations */
+  async migrate(c: Context, direction: string = "up") {
+    console.log(\`Migrating: \${direction}\`);
+  }
+
+  /** Seed the database with count records */
+  async seed(c: Context, count: number) {
+    console.log(\`Seeding \${count} records\`);
+  }
+}
+`,
+      );
+
+      writeTasks(`
+import { DbTasks } from "./db-tasks";
+
+export class Tasks {
+  db = new DbTasks();
+
+  /** Hello */
+  async hello(c: Context) {
+    console.log("hello");
+  }
+}
+`);
+
+      // Should list the namespace with typed params
+      const listResult = await runCLI("--list");
+      expect(listResult.code).toBe(0);
+      expect(listResult.stdout).toContain("db:migrate");
+      expect(listResult.stdout).toContain("db:seed");
+
+      // Should show help with correct types
+      const helpResult = await runCLI("db:seed", "-h");
+      expect(helpResult.code).toBe(0);
+      expect(helpResult.stdout).toContain("count");
+      expect(helpResult.stdout).toContain("number");
+
+      // Should execute with type coercion (number, not string)
+      const execResult = await runCLI("db:seed", "42");
+      expect(execResult.code).toBe(0);
+      expect(execResult.stdout).toContain("Seeding 42 records");
+
+      // Should reject invalid type
+      const badResult = await runCLI("db:seed", "notanumber");
+      expect(badResult.code).toBe(1);
+    });
+
+    test("should show param signatures for imported namespaces in list", async () => {
+      writeFileSync(
+        join(TEST_DIR, "api-tasks.ts"),
+        `import { Context } from "${CONTEXT_PATH}";
+
+export class ApiTasks {
+  /**
+   * Deploy to environment
+   * @flag env -e --environment
+   */
+  async deploy(c: Context, env: string, force: boolean = false) {
+    console.log(\`Deploying to \${env} (force=\${force})\`);
+  }
+}
+`,
+      );
+
+      writeTasks(`
+import { ApiTasks } from "./api-tasks";
+
+export class Tasks {
+  api = new ApiTasks();
+
+  /** Hello */
+  async hello(c: Context) {
+    console.log("hello");
+  }
+}
+`);
+
+      const listResult = await runCLI("--list");
+      expect(listResult.code).toBe(0);
+      expect(listResult.stdout).toContain("api:deploy");
+      expect(listResult.stdout).toContain("<env>");
+
+      // Should work with flags from imported source
+      const execResult = await runCLI("api:deploy", "-e", "prod");
+      expect(execResult.code).toBe(0);
+      expect(execResult.stdout).toContain("Deploying to prod");
+    });
+  });
+
   describe("Class Inheritance", () => {
     test("should execute inherited methods", async () => {
       writeTasks(`

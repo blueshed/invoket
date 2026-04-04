@@ -1,8 +1,12 @@
 #!/usr/bin/env bun
 import { Context } from "./context";
+import { dirname } from "path";
 import {
   discoverAllTasks,
   discoverRuntimeNamespaces,
+  extractImports,
+  extractMethodsFromClass,
+  findUnresolvedNamespaces,
   parseCommand,
   parseCliArgs,
   resolveArgs,
@@ -50,6 +54,24 @@ export class Tasks {
 
   // Discover all tasks including namespaced
   const discovered = discoverAllTasks(source);
+
+  // Resolve imported namespace classes from their source files
+  const imports = extractImports(source);
+  const unresolved = findUnresolvedNamespaces(source, discovered);
+  for (const [propName, className] of unresolved) {
+    const importPath = imports.get(className);
+    if (!importPath) continue;
+    try {
+      const resolvedPath = Bun.resolveSync(importPath, dirname(tasksPath));
+      const importedSource = await Bun.file(resolvedPath).text();
+      const methods = extractMethodsFromClass(importedSource, className);
+      if (methods.size > 0) {
+        discovered.namespaced.set(propName, methods);
+      }
+    } catch {
+      // Can't resolve import — runtime discovery will handle it
+    }
+  }
 
   // Also discover imported namespaces from runtime
   discoverRuntimeNamespaces(instance, discovered);

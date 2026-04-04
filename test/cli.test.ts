@@ -4,7 +4,9 @@ import {
   parseCommand,
   extractClassDoc,
   extractFlagAnnotations,
+  extractImports,
   extractMethodsFromClass,
+  findUnresolvedNamespaces,
   parseParams,
   parseCliArgs,
   resolveArgs,
@@ -540,6 +542,82 @@ export class Tasks {
 `;
     const discovered = discoverAllTasks(source);
     expect(discovered.classDoc).toBe("My project tasks");
+  });
+});
+
+describe("extractImports", () => {
+  test("extracts named imports", () => {
+    const source = `import { Foo, Bar } from "./stuff";`;
+    const imports = extractImports(source);
+    expect(imports.get("Foo")).toBe("./stuff");
+    expect(imports.get("Bar")).toBe("./stuff");
+  });
+
+  test("extracts default imports", () => {
+    const source = `import Baz from "./baz";`;
+    const imports = extractImports(source);
+    expect(imports.get("Baz")).toBe("./baz");
+  });
+
+  test("handles aliased imports", () => {
+    const source = `import { Original as Aliased } from "./mod";`;
+    const imports = extractImports(source);
+    expect(imports.get("Aliased")).toBe("./mod");
+    expect(imports.has("Original")).toBe(false);
+  });
+
+  test("skips type-only imports", () => {
+    const source = `import type { Foo } from "./types";`;
+    const imports = extractImports(source);
+    expect(imports.has("Foo")).toBe(false);
+  });
+
+  test("handles multiple import statements", () => {
+    const source = `
+import { A } from "./a";
+import { B, C } from "./bc";
+import D from "./d";
+`;
+    const imports = extractImports(source);
+    expect(imports.get("A")).toBe("./a");
+    expect(imports.get("B")).toBe("./bc");
+    expect(imports.get("C")).toBe("./bc");
+    expect(imports.get("D")).toBe("./d");
+  });
+});
+
+describe("findUnresolvedNamespaces", () => {
+  test("finds namespaces not in discovered", () => {
+    const source = `
+export class Tasks {
+  db = new DbNamespace();
+  api = new ApiNamespace();
+}
+`;
+    const discovered: DiscoveredTasks = {
+      root: new Map(),
+      namespaced: new Map([["db", new Map()]]),
+      classDoc: null,
+    };
+    const unresolved = findUnresolvedNamespaces(source, discovered);
+    expect(unresolved.has("api")).toBe(true);
+    expect(unresolved.get("api")).toBe("ApiNamespace");
+    expect(unresolved.has("db")).toBe(false);
+  });
+
+  test("skips private namespaces", () => {
+    const source = `
+export class Tasks {
+  _hidden = new HiddenNamespace();
+}
+`;
+    const discovered: DiscoveredTasks = {
+      root: new Map(),
+      namespaced: new Map(),
+      classDoc: null,
+    };
+    const unresolved = findUnresolvedNamespaces(source, discovered);
+    expect(unresolved.has("_hidden")).toBe(false);
   });
 });
 
