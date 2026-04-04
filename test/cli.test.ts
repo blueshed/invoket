@@ -1,128 +1,25 @@
 import { describe, test, expect } from "bun:test";
+import {
+  coerceArg,
+  parseCommand,
+  extractClassDoc,
+  extractFlagAnnotations,
+  extractMethodsFromClass,
+  parseParams,
+  parseCliArgs,
+  resolveArgs,
+  type ParamType,
+  type ParamMeta,
+  type TaskMeta,
+} from "../src/parser";
 
-// Extract the functions we want to test by re-implementing them here
-// In a real project, we'd export these from cli.ts
-
-type ParamType = "string" | "number" | "boolean" | "object" | "array";
-
-interface ParamMeta {
-  name: string;
-  type: ParamType;
-  required: boolean;
-}
-
-interface TaskMeta {
-  description: string;
-  params: ParamMeta[];
-}
-
-// Parse TypeScript source to extract method signatures and types
+// Wrapper: extract methods from a source snippet as if it were class Tasks
 function extractTaskMeta(source: string): Map<string, TaskMeta> {
-  const tasks = new Map<string, TaskMeta>();
-
-  const methodPattern =
-    /\/\*\*\s*([^*]*(?:\*(?!\/)[^*]*)*)\*\/\s*async\s+(\w+)\s*\(\s*c\s*:\s*Context\s*(?:,\s*([^)]+))?\s*\)/g;
-
-  let match;
-  while ((match = methodPattern.exec(source)) !== null) {
-    const [, jsdoc, methodName, paramsStr] = match;
-
-    // Skip private methods and constructor
-    if (methodName.startsWith("_") || methodName === "constructor") {
-      continue;
-    }
-
-    const description =
-      jsdoc
-        .split("\n")
-        .map((line) => line.replace(/^\s*\*?\s*/, "").trim())
-        .filter((line) => line && !line.startsWith("@"))[0] || "";
-
-    const params: ParamMeta[] = [];
-
-    if (paramsStr) {
-      // Order matters: more specific patterns first
-      const paramPattern =
-        /(\w+)\s*:\s*(\w+\[\]|Record<[^>]+>|\{[^}]*\}|string|number|boolean|\w+)(?:\s*=\s*[^,)]+)?/g;
-      let paramMatch;
-
-      while ((paramMatch = paramPattern.exec(paramsStr)) !== null) {
-        const [fullMatch, name, rawType] = paramMatch;
-        const hasDefault = fullMatch.includes("=");
-
-        let type: ParamType;
-        if (rawType === "string") {
-          type = "string";
-        } else if (rawType === "number") {
-          type = "number";
-        } else if (rawType === "boolean") {
-          type = "boolean";
-        } else if (rawType.endsWith("[]")) {
-          type = "array";
-        } else {
-          type = "object";
-        }
-
-        params.push({
-          name,
-          type,
-          required: !hasDefault,
-        });
-      }
-    }
-
-    tasks.set(methodName, { description, params });
-  }
-
-  return tasks;
-}
-
-// Convert CLI arg to typed value
-function coerceArg(value: string, type: ParamType): unknown {
-  switch (type) {
-    case "number": {
-      if (value === "") {
-        throw new Error(`Expected number, got ""`);
-      }
-      const n = Number(value);
-      if (Number.isNaN(n)) {
-        throw new Error(`Expected number, got "${value}"`);
-      }
-      return n;
-    }
-    case "boolean":
-      if (value === "true" || value === "1") return true;
-      if (value === "false" || value === "0") return false;
-      throw new Error(`Expected boolean, got "${value}"`);
-    case "object":
-    case "array": {
-      try {
-        const parsed = JSON.parse(value);
-        if (type === "array" && !Array.isArray(parsed)) {
-          throw new Error(`Expected array, got ${typeof parsed}`);
-        }
-        if (
-          type === "object" &&
-          (typeof parsed !== "object" ||
-            Array.isArray(parsed) ||
-            parsed === null)
-        ) {
-          throw new Error(
-            `Expected object, got ${Array.isArray(parsed) ? "array" : typeof parsed}`,
-          );
-        }
-        return parsed;
-      } catch (e) {
-        if (e instanceof SyntaxError) {
-          throw new Error(`Invalid JSON: ${e.message}`);
-        }
-        throw e;
-      }
-    }
-    case "string":
-    default:
-      return value;
-  }
+  // Wrap bare methods in a class if needed for extractMethodsFromClass
+  const wrapped = source.includes("class ")
+    ? source
+    : `class Tasks {\n${source}\n}`;
+  return extractMethodsFromClass(wrapped, "Tasks");
 }
 
 describe("extractTaskMeta", () => {
@@ -132,7 +29,7 @@ describe("extractTaskMeta", () => {
       async build(c: Context) {}
     `;
     const meta = extractTaskMeta(source);
-    expect(meta.get("build")).toEqual({
+    expect(meta.get("build")).toMatchObject({
       description: "Run the build",
       params: [],
     });
@@ -144,7 +41,7 @@ describe("extractTaskMeta", () => {
       async hello(c: Context, name: string) {}
     `;
     const meta = extractTaskMeta(source);
-    expect(meta.get("hello")).toEqual({
+    expect(meta.get("hello")).toMatchObject({
       description: "Say hello",
       params: [{ name: "name", type: "string", required: true }],
     });
@@ -156,7 +53,7 @@ describe("extractTaskMeta", () => {
       async count(c: Context, n: number) {}
     `;
     const meta = extractTaskMeta(source);
-    expect(meta.get("count")).toEqual({
+    expect(meta.get("count")).toMatchObject({
       description: "Count items",
       params: [{ name: "n", type: "number", required: true }],
     });
@@ -168,7 +65,7 @@ describe("extractTaskMeta", () => {
       async greet(c: Context, name: string = "World") {}
     `;
     const meta = extractTaskMeta(source);
-    expect(meta.get("greet")).toEqual({
+    expect(meta.get("greet")).toMatchObject({
       description: "Greet someone",
       params: [{ name: "name", type: "string", required: false }],
     });
@@ -180,7 +77,7 @@ describe("extractTaskMeta", () => {
       async deploy(c: Context, env: string, force: boolean = false) {}
     `;
     const meta = extractTaskMeta(source);
-    expect(meta.get("deploy")).toEqual({
+    expect(meta.get("deploy")).toMatchObject({
       description: "Deploy app",
       params: [
         { name: "env", type: "string", required: true },
@@ -195,7 +92,7 @@ describe("extractTaskMeta", () => {
       async batch(c: Context, items: string[]) {}
     `;
     const meta = extractTaskMeta(source);
-    expect(meta.get("batch")).toEqual({
+    expect(meta.get("batch")).toMatchObject({
       description: "Process items",
       params: [{ name: "items", type: "array", required: true }],
     });
@@ -207,7 +104,7 @@ describe("extractTaskMeta", () => {
       async search(c: Context, params: SearchParams) {}
     `;
     const meta = extractTaskMeta(source);
-    expect(meta.get("search")).toEqual({
+    expect(meta.get("search")).toMatchObject({
       description: "Search entities",
       params: [{ name: "params", type: "object", required: true }],
     });
@@ -219,7 +116,7 @@ describe("extractTaskMeta", () => {
       async config(c: Context, settings: Record<string, string>) {}
     `;
     const meta = extractTaskMeta(source);
-    expect(meta.get("config")).toEqual({
+    expect(meta.get("config")).toMatchObject({
       description: "Set config",
       params: [{ name: "settings", type: "object", required: true }],
     });
@@ -433,35 +330,6 @@ describe("private methods (spec section 3)", () => {
   });
 });
 
-// Parse command to extract namespace and method
-function parseCommand(command: string): {
-  namespace: string | null;
-  method: string;
-} {
-  // Check for namespace separator (: or .)
-  const colonIdx = command.indexOf(":");
-  const dotIdx = command.indexOf(".");
-
-  // Use whichever separator comes first
-  let sepIdx = -1;
-  if (colonIdx !== -1 && dotIdx !== -1) {
-    sepIdx = Math.min(colonIdx, dotIdx);
-  } else if (colonIdx !== -1) {
-    sepIdx = colonIdx;
-  } else if (dotIdx !== -1) {
-    sepIdx = dotIdx;
-  }
-
-  if (sepIdx !== -1) {
-    return {
-      namespace: command.slice(0, sepIdx),
-      method: command.slice(sepIdx + 1),
-    };
-  }
-
-  return { namespace: null, method: command };
-}
-
 describe("namespace parsing (spec section 5)", () => {
   test("parses simple task name", () => {
     expect(parseCommand("hello")).toEqual({ namespace: null, method: "hello" });
@@ -630,21 +498,6 @@ describe("task discovery (spec section 8)", () => {
   });
 });
 
-// Extract class-level JSDoc
-function extractClassDoc(source: string): string | null {
-  const match = source.match(
-    /\/\*\*\s*([^*]*(?:\*(?!\/)[^*]*)*)\*\/\s*export\s+class\s+Tasks/,
-  );
-  if (!match) return null;
-
-  const lines = match[1]
-    .split("\n")
-    .map((line) => line.replace(/^\s*\*?\s*/, "").trim())
-    .filter((line) => line && !line.startsWith("@"));
-
-  return lines[0] || null;
-}
-
 describe("JSDoc extraction (spec section 6)", () => {
   test("extracts class-level JSDoc", () => {
     const source = `
@@ -720,65 +573,11 @@ describe("error handling (spec section 10)", () => {
   });
 });
 
-// Rest parameter detection
-interface RestParamMeta extends ParamMeta {
-  isRest: boolean;
-}
-
-function extractParamsWithRest(paramsStr: string): RestParamMeta[] {
-  const params: RestParamMeta[] = [];
-
-  // Check for rest parameter: ...name: type
-  const restMatch = paramsStr.match(/\.\.\.(\w+)\s*:\s*(\w+\[\]|\w+)/);
-  if (restMatch) {
-    const [, name, rawType] = restMatch;
-    params.push({
-      name,
-      type: rawType.endsWith("[]") ? "array" : "string",
-      required: false,
-      isRest: true,
-    });
-    return params;
-  }
-
-  // Regular params
-  const paramPattern =
-    /(\w+)\s*:\s*(\w+\[\]|Record<[^>]+>|\{[^}]*\}|string|number|boolean|\w+)(?:\s*=\s*[^,)]+)?/g;
-  let match;
-
-  while ((match = paramPattern.exec(paramsStr)) !== null) {
-    const [fullMatch, name, rawType] = match;
-    const hasDefault = fullMatch.includes("=");
-
-    let type: ParamType;
-    if (rawType === "string") {
-      type = "string";
-    } else if (rawType === "number") {
-      type = "number";
-    } else if (rawType === "boolean") {
-      type = "boolean";
-    } else if (rawType.endsWith("[]")) {
-      type = "array";
-    } else {
-      type = "object";
-    }
-
-    params.push({
-      name,
-      type,
-      required: !hasDefault,
-      isRest: false,
-    });
-  }
-
-  return params;
-}
-
 describe("rest parameters (spec section 3)", () => {
   test("detects rest parameter", () => {
-    const params = extractParamsWithRest("...items: string[]");
+    const params = parseParams("...items: string[]");
     expect(params).toHaveLength(1);
-    expect(params[0]).toEqual({
+    expect(params[0]).toMatchObject({
       name: "items",
       type: "array",
       required: false,
@@ -787,7 +586,7 @@ describe("rest parameters (spec section 3)", () => {
   });
 
   test("formats rest param for help as [items...]", () => {
-    const params = extractParamsWithRest("...items: string[]");
+    const params = parseParams("...items: string[]");
     const formatted = params
       .map((p) =>
         p.isRest
@@ -804,211 +603,6 @@ describe("rest parameters (spec section 3)", () => {
 // =============================================================================
 // FLAG PARSING TESTS
 // =============================================================================
-
-// Interface for parsed CLI arguments
-interface ParsedArgs {
-  positional: string[];
-  flags: Map<string, string | boolean>;
-}
-
-// Parse CLI arguments into flags and positional args
-function parseCliArgs(args: string[]): ParsedArgs {
-  const positional: string[] = [];
-  const flags = new Map<string, string | boolean>();
-  let stopFlagParsing = false;
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-
-    if (stopFlagParsing) {
-      positional.push(arg);
-      continue;
-    }
-
-    if (arg === "--") {
-      stopFlagParsing = true;
-      continue;
-    }
-
-    // --flag=value
-    if (arg.startsWith("--") && arg.includes("=")) {
-      const eqIdx = arg.indexOf("=");
-      const name = arg.slice(2, eqIdx);
-      const value = arg.slice(eqIdx + 1);
-      flags.set(name, value);
-      continue;
-    }
-
-    // --no-flag (boolean negation)
-    if (arg.startsWith("--no-")) {
-      const name = arg.slice(5);
-      flags.set(name, false);
-      continue;
-    }
-
-    // --flag (may be boolean or need next arg)
-    if (arg.startsWith("--")) {
-      const name = arg.slice(2);
-      const nextArg = args[i + 1];
-
-      // If next arg exists and doesn't look like a flag, use it as value
-      if (nextArg !== undefined && !nextArg.startsWith("-")) {
-        flags.set(name, nextArg);
-        i++; // Skip next arg
-      } else {
-        flags.set(name, true); // Boolean flag
-      }
-      continue;
-    }
-
-    // -f=value (short with equals, single char only)
-    if (arg.startsWith("-") && !arg.startsWith("--") && arg.includes("=")) {
-      const eqIdx = arg.indexOf("=");
-      const name = arg.slice(1, eqIdx);
-      if (name.length === 1) {
-        const value = arg.slice(eqIdx + 1);
-        flags.set(name, value);
-        continue;
-      }
-    }
-
-    // -f value or -f (boolean) — single char short flags only
-    if (arg.startsWith("-") && arg.length === 2) {
-      const name = arg.slice(1);
-      const nextArg = args[i + 1];
-
-      if (nextArg !== undefined && !nextArg.startsWith("-")) {
-        flags.set(name, nextArg);
-        i++;
-      } else {
-        flags.set(name, true);
-      }
-      continue;
-    }
-
-    // Positional argument
-    positional.push(arg);
-  }
-
-  return { positional, flags };
-}
-
-// Flag metadata for a parameter
-interface FlagMeta {
-  long: string; // e.g., "--name"
-  short?: string; // e.g., "-n"
-  aliases?: string[]; // e.g., ["--environment"]
-}
-
-// Extended ParamMeta with flag support
-interface ExtendedParamMeta {
-  name: string;
-  type: ParamType;
-  required: boolean;
-  isRest: boolean;
-  flag?: FlagMeta;
-}
-
-// Extract @flag annotations from JSDoc
-function extractFlagAnnotations(
-  jsdoc: string,
-): Map<string, { short?: string; aliases?: string[] }> {
-  const flags = new Map<string, { short?: string; aliases?: string[] }>();
-
-  // Match @flag paramName -s --alias1 --alias2
-  const flagPattern = /@flag\s+(\w+)\s+([^\n@]*)/g;
-  let match;
-
-  while ((match = flagPattern.exec(jsdoc)) !== null) {
-    const [, paramName, flagsStr] = match;
-    const parts = flagsStr.trim().split(/\s+/);
-
-    let short: string | undefined;
-    const aliases: string[] = [];
-
-    for (const part of parts) {
-      if (part.startsWith("--")) {
-        aliases.push(part);
-      } else if (part.startsWith("-") && part.length === 2) {
-        short = part;
-      }
-    }
-
-    flags.set(paramName, {
-      short: short,
-      aliases: aliases.length > 0 ? aliases : undefined,
-    });
-  }
-
-  return flags;
-}
-
-// Parse params with flag metadata
-function parseParamsWithFlags(
-  paramsStr: string | undefined,
-  jsdoc: string,
-): ExtendedParamMeta[] {
-  const params: ExtendedParamMeta[] = [];
-  if (!paramsStr) return params;
-
-  const flagAnnotations = extractFlagAnnotations(jsdoc);
-
-  // Check for rest parameter first: ...name: type
-  const restMatch = paramsStr.match(/\.\.\.(\w+)\s*:\s*(\w+\[\]|\w+)/);
-  if (restMatch) {
-    const [, name, rawType] = restMatch;
-    params.push({
-      name,
-      type: rawType.endsWith("[]") ? "array" : "string",
-      required: false,
-      isRest: true,
-      // Rest params don't get flags
-    });
-    return params;
-  }
-
-  // Updated regex to handle union types with null (e.g., string | null)
-  const paramPattern =
-    /(\w+)\s*:\s*(\w+\[\]|Record<[^>]+>|\{[^}]*\}|string|number|boolean|\w+)(?:\s*\|\s*null)?(?:\s*=\s*[^,)]+)?/g;
-  let paramMatch;
-
-  while ((paramMatch = paramPattern.exec(paramsStr)) !== null) {
-    const [fullMatch, name, rawType] = paramMatch;
-    const hasDefault = fullMatch.includes("=");
-    const isNullable = fullMatch.includes("| null");
-
-    let type: ParamType;
-    if (rawType === "string") {
-      type = "string";
-    } else if (rawType === "number") {
-      type = "number";
-    } else if (rawType === "boolean") {
-      type = "boolean";
-    } else if (rawType.endsWith("[]")) {
-      type = "array";
-    } else {
-      type = "object";
-    }
-
-    // Build flag metadata
-    const annotation = flagAnnotations.get(name);
-    const flag: FlagMeta = {
-      long: `--${name}`,
-      short: annotation?.short,
-      aliases: annotation?.aliases,
-    };
-
-    params.push({
-      name,
-      type,
-      required: !hasDefault && !isNullable,
-      isRest: false,
-      flag,
-    });
-  }
-
-  return params;
-}
 
 describe("extractFlagAnnotations", () => {
   test("extracts @flag with short flag", () => {
@@ -1082,9 +676,9 @@ describe("extractFlagAnnotations", () => {
   });
 });
 
-describe("parseParamsWithFlags", () => {
+describe("parseParams", () => {
   test("auto-generates long flag from param name", () => {
-    const params = parseParamsWithFlags("env: string", "Deploy app");
+    const params = parseParams("env: string", "Deploy app");
     expect(params[0].flag).toEqual({ long: "--env" });
   });
 
@@ -1093,7 +687,7 @@ describe("parseParamsWithFlags", () => {
       Deploy app
       @flag env -e
     `;
-    const params = parseParamsWithFlags("env: string", jsdoc);
+    const params = parseParams("env: string", jsdoc);
     expect(params[0].flag).toEqual({ long: "--env", short: "-e" });
   });
 
@@ -1102,7 +696,7 @@ describe("parseParamsWithFlags", () => {
       Deploy
       @flag env -e --environment
     `;
-    const params = parseParamsWithFlags("env: string", jsdoc);
+    const params = parseParams("env: string", jsdoc);
     expect(params[0].flag).toEqual({
       long: "--env",
       short: "-e",
@@ -1116,7 +710,7 @@ describe("parseParamsWithFlags", () => {
       @flag env -e
       @flag force -f
     `;
-    const params = parseParamsWithFlags(
+    const params = parseParams(
       "env: string, force: boolean = false",
       jsdoc,
     );
@@ -1125,7 +719,7 @@ describe("parseParamsWithFlags", () => {
   });
 
   test("rest parameters do not get flags", () => {
-    const params = parseParamsWithFlags("...packages: string[]", "Install");
+    const params = parseParams("...packages: string[]", "Install");
     expect(params[0].isRest).toBe(true);
     expect(params[0].flag).toBeUndefined();
   });
@@ -1135,13 +729,13 @@ describe("parseParamsWithFlags", () => {
       Deploy
       @flag env -e
     `;
-    const params = parseParamsWithFlags("env: string, count: number", jsdoc);
+    const params = parseParams("env: string, count: number", jsdoc);
     expect(params[0].flag).toEqual({ long: "--env", short: "-e" });
     expect(params[1].flag).toEqual({ long: "--count" });
   });
 
   test("preserves other param metadata", () => {
-    const params = parseParamsWithFlags(
+    const params = parseParams(
       "name: string, count: number = 1",
       "Hello",
     );
@@ -1160,7 +754,7 @@ describe("parseParamsWithFlags", () => {
   });
 
   test("nullable params are treated as optional", () => {
-    const params = parseParamsWithFlags(
+    const params = parseParams(
       "name: string, filter: string | null",
       "Search",
     );
@@ -1177,7 +771,7 @@ describe("parseParamsWithFlags", () => {
   });
 
   test("nullable with default is still optional", () => {
-    const params = parseParamsWithFlags(
+    const params = parseParams(
       "filter: string | null = null",
       "Search",
     );
@@ -1189,7 +783,7 @@ describe("parseParamsWithFlags", () => {
   });
 
   test("handles multiple nullable params", () => {
-    const params = parseParamsWithFlags(
+    const params = parseParams(
       "a: string, b: number | null, c: boolean | null",
       "Test",
     );
@@ -1198,87 +792,6 @@ describe("parseParamsWithFlags", () => {
     expect(params[2].required).toBe(false);
   });
 });
-
-// Resolve arguments from parsed CLI args using param metadata
-function resolveArgs(
-  params: ExtendedParamMeta[],
-  parsed: ParsedArgs,
-  coerceFn: (value: string, type: ParamType) => unknown,
-): unknown[] {
-  const result: unknown[] = [];
-  const usedPositional = new Set<number>();
-
-  for (const param of params) {
-    // Handle rest parameters - collect all remaining positional args
-    if (param.isRest) {
-      const remaining = parsed.positional.filter(
-        (_, i) => !usedPositional.has(i),
-      );
-      result.push(...remaining);
-      break;
-    }
-
-    let value: string | boolean | undefined;
-
-    // Try to get value from flags first
-    if (param.flag) {
-      // Check long flag (without --)
-      const longName = param.flag.long.slice(2);
-      if (parsed.flags.has(longName)) {
-        value = parsed.flags.get(longName);
-      }
-      // Check short flag (without -)
-      else if (param.flag.short) {
-        const shortName = param.flag.short.slice(1);
-        if (parsed.flags.has(shortName)) {
-          value = parsed.flags.get(shortName);
-        }
-      }
-      // Check aliases
-      if (value === undefined && param.flag.aliases) {
-        for (const alias of param.flag.aliases) {
-          const aliasName = alias.slice(2);
-          if (parsed.flags.has(aliasName)) {
-            value = parsed.flags.get(aliasName);
-            break;
-          }
-        }
-      }
-    }
-
-    // Fall back to positional if no flag found
-    if (value === undefined) {
-      for (let i = 0; i < parsed.positional.length; i++) {
-        if (!usedPositional.has(i)) {
-          value = parsed.positional[i];
-          usedPositional.add(i);
-          break;
-        }
-      }
-    }
-
-    // Handle missing values
-    if (value === undefined) {
-      if (param.required) {
-        throw new Error(
-          `Missing required argument: <${param.name}> (${param.type})`,
-        );
-      }
-      result.push(undefined); // Preserve position so subsequent params align correctly
-      continue;
-    }
-
-    // Coerce and add to result
-    // Boolean flags that are already boolean don't need coercion
-    if (typeof value === "boolean" && param.type === "boolean") {
-      result.push(value);
-    } else {
-      result.push(coerceFn(String(value), param.type));
-    }
-  }
-
-  return result;
-}
 
 describe("resolveArgs", () => {
   // Helper to create params with flags
@@ -1291,7 +804,7 @@ describe("resolveArgs", () => {
       short?: string;
       aliases?: string[];
     }>,
-  ): ExtendedParamMeta[] =>
+  ): ParamMeta[] =>
     defs.map((d) => ({
       name: d.name,
       type: d.type,
@@ -1312,7 +825,7 @@ describe("resolveArgs", () => {
       { name: "count", type: "number" },
     ]);
     const parsed = { positional: ["World", "3"], flags: new Map() };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual(["World", 3]);
   });
 
@@ -1328,7 +841,7 @@ describe("resolveArgs", () => {
         ["count", "3"],
       ]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual(["World", 3]);
   });
 
@@ -1344,7 +857,7 @@ describe("resolveArgs", () => {
         ["c", "3"],
       ]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual(["World", 3]);
   });
 
@@ -1356,7 +869,7 @@ describe("resolveArgs", () => {
       positional: [],
       flags: new Map<string, string | boolean>([["environment", "prod"]]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual(["prod"]);
   });
 
@@ -1369,7 +882,7 @@ describe("resolveArgs", () => {
       positional: ["World"],
       flags: new Map<string, string | boolean>([["count", "3"]]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual(["World", 3]);
   });
 
@@ -1379,7 +892,7 @@ describe("resolveArgs", () => {
       positional: ["Positional"],
       flags: new Map<string, string | boolean>([["name", "FromFlag"]]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual(["FromFlag"]);
   });
 
@@ -1391,7 +904,7 @@ describe("resolveArgs", () => {
       positional: [],
       flags: new Map<string, string | boolean>([["force", true]]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual([true]);
   });
 
@@ -1403,7 +916,7 @@ describe("resolveArgs", () => {
       positional: [],
       flags: new Map<string, string | boolean>([["force", false]]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual([false]);
   });
 
@@ -1415,14 +928,14 @@ describe("resolveArgs", () => {
       positional: [],
       flags: new Map<string, string | boolean>([["force", "true"]]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual([true]);
   });
 
   test("throws on missing required arg", () => {
     const params = makeParams([{ name: "name", type: "string" }]);
     const parsed = { positional: [], flags: new Map() };
-    expect(() => resolveArgs(params, parsed, coerceArg)).toThrow(
+    expect(() => resolveArgs(params, parsed)).toThrow(
       "Missing required argument: <name>",
     );
   });
@@ -1436,13 +949,13 @@ describe("resolveArgs", () => {
       positional: ["World"],
       flags: new Map(),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     // undefined preserves position; JS default params handle it correctly
     expect(result).toEqual(["World", undefined]);
   });
 
   test("handles rest parameters", () => {
-    const params: ExtendedParamMeta[] = [
+    const params: ParamMeta[] = [
       {
         name: "packages",
         type: "array",
@@ -1454,12 +967,12 @@ describe("resolveArgs", () => {
       positional: ["react", "vue", "angular"],
       flags: new Map(),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual(["react", "vue", "angular"]);
   });
 
   test("handles rest parameters with preceding params", () => {
-    const params: ExtendedParamMeta[] = [
+    const params: ParamMeta[] = [
       {
         name: "registry",
         type: "string",
@@ -1478,7 +991,7 @@ describe("resolveArgs", () => {
       positional: ["react", "vue"],
       flags: new Map<string, string | boolean>([["registry", "npm"]]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     // registry from flag, packages from positional
     expect(result).toEqual(["npm", "react", "vue"]);
   });
@@ -1494,7 +1007,7 @@ describe("resolveArgs", () => {
       positional: ["World"],
       flags: new Map<string, string | boolean>([["count", "2"]]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual(["World", 2]);
   });
 
@@ -1509,7 +1022,7 @@ describe("resolveArgs", () => {
       positional: ["World"],
       flags: new Map<string, string | boolean>([["required", "42"]]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     // undefined preserves position so "required" lands in the correct arg slot
     expect(result).toEqual(["World", undefined, 42]);
   });
@@ -1524,7 +1037,7 @@ describe("resolveArgs", () => {
       positional: [],
       flags: new Map<string, string | boolean>([["c", "7"]]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual([undefined, undefined, 7]);
   });
 
@@ -1538,7 +1051,7 @@ describe("resolveArgs", () => {
       positional: ["World", "3"],
       flags: new Map<string, string | boolean>([["verbose", true]]),
     };
-    const result = resolveArgs(params, parsed, coerceArg);
+    const result = resolveArgs(params, parsed);
     expect(result).toEqual(["World", true, 3]);
   });
 });
