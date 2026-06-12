@@ -1,0 +1,36 @@
+name: Publish create-blueshed to npm
+
+on:
+  push:
+    tags:
+      - "create-blueshed-v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - run: bun install
+
+      - run: bun test
+
+      # Smoke: scaffold into a temp dir and check the tree materializes
+      - run: |
+          bun packages/create-blueshed/cli.ts /tmp/smoke-app --name smoke-app
+          test -f /tmp/smoke-app/.claude/hooks/session-start.sh
+          test -f /tmp/smoke-app/.ctx.jsonl
+
+      - name: Publish to npm
+        working-directory: packages/create-blueshed
+        run: npm publish --provenance --access public
