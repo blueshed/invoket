@@ -1,0 +1,4 @@
+node_modules
+.ctx.db
+board.json
+dist

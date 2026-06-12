@@ -13,6 +13,11 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
   },
-  "include": ["src/**/*", "test/**/*", "examples/**/*"],
+  "include": [
+    "src/**/*",
+    "test/**/*",
+    "examples/**/*",
+    "packages/create-blueshed/cli.ts",
+  ],
   "exclude": ["node_modules"],
 }

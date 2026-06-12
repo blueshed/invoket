@@ -1,0 +1,4 @@
+{"t":"fact","key":"commands","value":"bun dev (serve :3000, HMR); invt check (tsc + tests); invt -l (task list)","updated_at":"__NOW__"}
+{"t":"fact","key":"realtime","value":"board:main doc over /ws; state in board.json (delta JSON-file backend); send ops, never mutate locally","updated_at":"__NOW__"}
+{"t":"fact","key":"stack","value":"@blueshed/delta (sync) + @blueshed/railroad (signals/JSX, NOT React) + invoket (tasks); Bun runtime, no Node","updated_at":"__NOW__"}
+{"t":"decision","id":1,"subject":"backend","decision":"delta JSON-file backend","rationale":"smallest that fits; graduate to SQLite (queries) or Postgres (multi-process, RLS) per the delta-doc skill — browser code unchanged","status":"active","created_at":"__NOW__"}

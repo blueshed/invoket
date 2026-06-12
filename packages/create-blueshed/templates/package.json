@@ -1,0 +1,19 @@
+{
+  "name": "__NAME__",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun --hot server.ts",
+    "check": "bunx tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@blueshed/delta": "^0.5.0",
+    "@blueshed/railroad": "^0.10.0",
+    "invoket": "^0.2.0"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.5"
+  }
+}

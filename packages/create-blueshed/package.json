@@ -1,0 +1,32 @@
+{
+  "name": "create-blueshed",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Scaffold a Bun project on the blueshed stack (delta + railroad + invoket), wired for agent sessions",
+  "bin": {
+    "create-blueshed": "./cli.ts"
+  },
+  "files": [
+    "cli.ts",
+    "templates",
+    "README.md"
+  ],
+  "keywords": [
+    "create",
+    "scaffold",
+    "bun",
+    "delta",
+    "railroad",
+    "invoket",
+    "claude"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/blueshed/invoket",
+    "directory": "packages/create-blueshed"
+  },
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}
