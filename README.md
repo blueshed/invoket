@@ -25,6 +25,14 @@ You could. But then you write arg parsing, help text, and error handling every t
 
 One script solves one problem. A `tasks.ts` file is a project's command centre.
 
+## Do you need invoket?
+
+Maybe not. invoket's pitch — write a method, get arg parsing, help, and error handling for free — amortizes *authoring* effort. If an AI agent writes your commands, authoring is already free, and a bespoke `cli.ts` beside the code it operates on works just as well.
+
+What every project still needs is an **inventory**: one well-known place where commands live, so the next session — human or agent — finds the existing command instead of writing a duplicate. invoket provides that, but so does a cheaper convention: `package.json` scripts, a justfile, or a paragraph in CLAUDE.md saying "commands live as `cli.ts` beside the code they operate on; check for an existing one before writing a new one".
+
+invoket earns its keep when a human runs operational commands often enough to want one consistent grammar (`invt db:migrate up`) and a single `--help` that lists everything. If that's not you, a documented convention is enough.
+
 ## Installation
 
 ```bash
