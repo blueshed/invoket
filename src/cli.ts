@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
-import { Context } from "./context";
-import { dirname } from "path";
+import { Context, CommandError } from "./context";
+import { dirname, join } from "path";
+import { existsSync } from "fs";
+import { fileURLToPath } from "url";
 import {
   discoverAllTasks,
   discoverRuntimeNamespaces,
@@ -15,13 +17,25 @@ import {
   showTaskHelp,
 } from "./parser";
 
+// Walk up from startDir looking for tasks.ts (like make/just find their files)
+function findTasksFile(startDir: string): string | null {
+  let dir = startDir;
+  while (true) {
+    const candidate = join(dir, "tasks.ts");
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 // Main CLI entry point
 async function main() {
   const args = Bun.argv.slice(2);
 
   // --version flag
   if (args[0] === "--version") {
-    const pkgPath = new URL("../package.json", import.meta.url).pathname;
+    const pkgPath = fileURLToPath(new URL("../package.json", import.meta.url));
     const pkg = await Bun.file(pkgPath).json();
     console.log(pkg.version);
     return;
@@ -29,7 +43,6 @@ async function main() {
 
   // --init flag: scaffold tasks.ts and CLAUDE.md
   if (args[0] === "--init") {
-    const { existsSync } = await import("fs");
     const cwd = process.cwd();
 
     const tasksFile = `${cwd}/tasks.ts`;
@@ -52,11 +65,17 @@ export class Tasks {
     }
 
     const claudeFile = `${cwd}/CLAUDE.md`;
-    const claudeMdPath = new URL("../CLAUDE.md", import.meta.url).pathname;
+    const claudeMdPath = fileURLToPath(new URL("../CLAUDE.md", import.meta.url));
     const claudeMd = await Bun.file(claudeMdPath).text();
+    // First substantive line of the shipped guide doubles as the "already
+    // installed" marker — a mere mention of invoket shouldn't skip the append
+    const marker = claudeMd
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line && !line.startsWith("#"));
     if (existsSync(claudeFile)) {
       const existing = await Bun.file(claudeFile).text();
-      if (existing.includes("invoket")) {
+      if (marker && existing.includes(marker)) {
         console.log("CLAUDE.md already has invoket section, skipping.");
       } else {
         await Bun.write(claudeFile, existing.trimEnd() + "\n\n" + claudeMd);
@@ -70,12 +89,12 @@ export class Tasks {
     return;
   }
 
-  // Find tasks.ts
-  let tasksPath: string;
-  try {
-    tasksPath = Bun.resolveSync("./tasks.ts", process.cwd());
-  } catch {
-    console.log("No tasks.ts found. Run 'invt --init' to get started.");
+  // Find tasks.ts in cwd or any parent directory
+  const tasksPath = findTasksFile(process.cwd());
+  if (!tasksPath) {
+    console.error(
+      "No tasks.ts found in this directory or any parent. Run 'invt --init' to get started.",
+    );
     process.exit(1);
   }
 
@@ -85,6 +104,8 @@ export class Tasks {
   const { Tasks } = await import(tasksPath);
   const instance = new Tasks();
   const context = new Context();
+  // Tasks run relative to tasks.ts, wherever invt was invoked from
+  context.cwd = dirname(tasksPath);
 
   // Discover all tasks including namespaced
   const discovered = discoverAllTasks(source);
@@ -139,7 +160,10 @@ export class Tasks {
   const taskArgs = args.slice(1);
 
   // Check if asking for task-specific help: invt hello -h
-  const wantsTaskHelp = taskArgs.includes("-h") || taskArgs.includes("--help");
+  // Anything after -- is a literal task argument, never a help flag
+  const ddIdx = taskArgs.indexOf("--");
+  const beforeDD = ddIdx === -1 ? taskArgs : taskArgs.slice(0, ddIdx);
+  const wantsTaskHelp = beforeDD.includes("-h") || beforeDD.includes("--help");
 
   const { namespace, method: methodName } = parseCommand(command);
 
@@ -190,7 +214,7 @@ export class Tasks {
     // If method exists at runtime but not in source (inherited), allow it
     if (!meta && typeof method === "function") {
       // Inherited method - no type info, treat all args as strings
-      meta = { description: "", params: [] };
+      meta = { description: "", params: [], untyped: true };
     } else if (!meta) {
       console.error(`Unknown task: ${command}`);
       const allTasks = [...discovered.root.keys()];
@@ -215,8 +239,12 @@ export class Tasks {
     return;
   }
 
-  // Filter out help flags from taskArgs before parsing
-  const argsWithoutHelp = taskArgs.filter((a) => a !== "-h" && a !== "--help");
+  // Filter out help flags from taskArgs before parsing (only before --)
+  const notHelp = (a: string) => a !== "-h" && a !== "--help";
+  const argsWithoutHelp =
+    ddIdx === -1
+      ? taskArgs.filter(notHelp)
+      : [...beforeDD.filter(notHelp), ...taskArgs.slice(ddIdx)];
 
   // Parse CLI args into flags and positional
   const parsed = parseCliArgs(argsWithoutHelp);
@@ -224,8 +252,8 @@ export class Tasks {
   // Validate and coerce arguments
   let coercedArgs: unknown[];
 
-  // If no param info (imported namespace), pass all args as strings
-  if (meta.params.length === 0 && argsWithoutHelp.length > 0) {
+  // If no signature info (runtime-discovered method), pass all args as strings
+  if (meta.untyped && argsWithoutHelp.length > 0) {
     coercedArgs = [...parsed.positional];
   } else {
     try {
@@ -242,7 +270,17 @@ export class Tasks {
   try {
     await method.call(thisArg, context, ...coercedArgs);
   } catch (e) {
-    console.error(`Error running "${command}": ${(e as Error).message}`);
+    if (e instanceof CommandError) {
+      // Command output was already written (or is in the message when hidden)
+      console.error(`Error running "${command}": ${e.message}`);
+    } else if (e instanceof Error) {
+      console.error(`Error running "${command}": ${e.message}`);
+      // A bug in the task itself — show where it happened
+      const frames = e.stack?.split("\n").slice(1).join("\n");
+      if (frames) console.error(frames);
+    } else {
+      console.error(`Error running "${command}": ${String(e)}`);
+    }
     process.exit(1);
   }
 }

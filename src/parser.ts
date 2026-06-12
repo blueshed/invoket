@@ -15,11 +15,13 @@ export interface ParamMeta {
   required: boolean;
   isRest: boolean;
   flag?: FlagMeta;
+  choices?: string[]; // from string-literal union types, e.g. "dev" | "prod"
 }
 
 export interface TaskMeta {
   description: string;
   params: ParamMeta[];
+  untyped?: boolean; // discovered at runtime only — no signature info available
 }
 
 // Parsed CLI arguments
@@ -176,9 +178,10 @@ export function parseParams(
     return params;
   }
 
-  // Updated regex to handle union types with null (e.g., string | null)
+  // Handles union types with null (e.g., string | null) and string-literal
+  // unions (e.g., "dev" | "prod"), which become validated string choices
   const paramPattern =
-    /(\w+)\s*:\s*(\w+\[\]|Record<[^>]+>|\{[^}]*\}|string|number|boolean|\w+)(?:\s*\|\s*null)?(?:\s*=\s*[^,)]+)?/g;
+    /(\w+)\s*:\s*((?:"[^"]*"|'[^']*')(?:\s*\|\s*(?:"[^"]*"|'[^']*'))*|\w+\[\]|Record<[^>]+>|\{[^}]*\}|string|number|boolean|\w+)(?:\s*\|\s*null)?(?:\s*=\s*[^,)]+)?/g;
   let paramMatch;
 
   while ((paramMatch = paramPattern.exec(paramsStr)) !== null) {
@@ -187,7 +190,13 @@ export function parseParams(
     const isNullable = fullMatch.includes("| null");
 
     let type: ParamType;
-    if (rawType === "string") {
+    let choices: string[] | undefined;
+    if (rawType.startsWith('"') || rawType.startsWith("'")) {
+      type = "string";
+      choices = [...rawType.matchAll(/"([^"]*)"|'([^']*)'/g)].map(
+        (m) => m[1] ?? m[2],
+      );
+    } else if (rawType === "string") {
       type = "string";
     } else if (rawType === "number") {
       type = "number";
@@ -213,6 +222,7 @@ export function parseParams(
       required: !hasDefault && !isNullable,
       isRest: false,
       flag,
+      choices,
     });
   }
 
@@ -315,7 +325,7 @@ export function discoverRuntimeNamespaces(
 
         // No type info for imported methods - treat args as strings
         if (!methods.has(methodName)) {
-          methods.set(methodName, { description: "", params: [] });
+          methods.set(methodName, { description: "", params: [], untyped: true });
         }
       }
       proto = Object.getPrototypeOf(proto);
@@ -375,6 +385,11 @@ export function coerceArg(value: string, type: ParamType): unknown {
   }
 }
 
+// Negative numbers (-3, -0.5) are values, not flags
+function isNegativeNumber(arg: string): boolean {
+  return /^-(\d+(\.\d+)?|\.\d+)$/.test(arg);
+}
+
 // Parse CLI arguments into flags and positional args
 export function parseCliArgs(args: string[]): ParsedArgs {
   const positional: string[] = [];
@@ -416,12 +431,21 @@ export function parseCliArgs(args: string[]): ParsedArgs {
       const nextArg = args[i + 1];
 
       // If next arg exists and doesn't look like a flag, use it as value
-      if (nextArg !== undefined && !nextArg.startsWith("-")) {
+      if (
+        nextArg !== undefined &&
+        (!nextArg.startsWith("-") || isNegativeNumber(nextArg))
+      ) {
         flags.set(name, nextArg);
         i++; // Skip next arg
       } else {
         flags.set(name, true); // Boolean flag
       }
+      continue;
+    }
+
+    // Bare negative number is a positional value, not a short flag
+    if (isNegativeNumber(arg)) {
+      positional.push(arg);
       continue;
     }
 
@@ -441,7 +465,10 @@ export function parseCliArgs(args: string[]): ParsedArgs {
       const name = arg.slice(1);
       const nextArg = args[i + 1];
 
-      if (nextArg !== undefined && !nextArg.startsWith("-")) {
+      if (
+        nextArg !== undefined &&
+        (!nextArg.startsWith("-") || isNegativeNumber(nextArg))
+      ) {
         flags.set(name, nextArg);
         i++;
       } else {
@@ -459,12 +486,42 @@ export function parseCliArgs(args: string[]): ParsedArgs {
 
 // Resolve arguments from parsed CLI args using param metadata
 export function resolveArgs(params: ParamMeta[], parsed: ParsedArgs): unknown[] {
+  // Reject unknown flags first — a typo'd flag silently changing behavior is
+  // worse than an error, and this diagnostic beats "missing required argument"
+  const validFlagNames = new Set<string>();
+  for (const param of params) {
+    if (!param.flag) continue;
+    validFlagNames.add(param.flag.long.slice(2));
+    if (param.flag.short) validFlagNames.add(param.flag.short.slice(1));
+    for (const alias of param.flag.aliases ?? []) {
+      validFlagNames.add(alias.slice(2));
+    }
+  }
+  const unknownFlags = [...parsed.flags.keys()].filter(
+    (name) => !validFlagNames.has(name),
+  );
+  if (unknownFlags.length > 0) {
+    const display = unknownFlags
+      .map((name) => (name.length === 1 ? `-${name}` : `--${name}`))
+      .join(", ");
+    const valid = params
+      .filter((p) => p.flag)
+      .map((p) => p.flag!.long)
+      .join(", ");
+    throw new Error(
+      `Unknown flag${unknownFlags.length > 1 ? "s" : ""}: ${display}` +
+        (valid ? `. Valid flags: ${valid}` : ""),
+    );
+  }
+
   const result: unknown[] = [];
   const usedPositional = new Set<number>();
+  let hasRest = false;
 
   for (const param of params) {
     // Handle rest parameters - collect all remaining positional args
     if (param.isRest) {
+      hasRest = true;
       const remaining = parsed.positional.filter(
         (_, i) => !usedPositional.has(i),
       );
@@ -474,28 +531,17 @@ export function resolveArgs(params: ParamMeta[], parsed: ParsedArgs): unknown[] 
 
     let value: string | boolean | undefined;
 
-    // Try to get value from flags first
+    // Try to get value from flags first; long flag wins over short and aliases
     if (param.flag) {
-      // Check long flag (without --)
-      const longName = param.flag.long.slice(2);
-      if (parsed.flags.has(longName)) {
-        value = parsed.flags.get(longName);
+      const flagNames = [param.flag.long.slice(2)];
+      if (param.flag.short) flagNames.push(param.flag.short.slice(1));
+      if (param.flag.aliases) {
+        flagNames.push(...param.flag.aliases.map((a) => a.slice(2)));
       }
-      // Check short flag (without -)
-      else if (param.flag.short) {
-        const shortName = param.flag.short.slice(1);
-        if (parsed.flags.has(shortName)) {
-          value = parsed.flags.get(shortName);
-        }
-      }
-      // Check aliases
-      if (value === undefined && param.flag.aliases) {
-        for (const alias of param.flag.aliases) {
-          const aliasName = alias.slice(2);
-          if (parsed.flags.has(aliasName)) {
-            value = parsed.flags.get(aliasName);
-            break;
-          }
+      for (const flagName of flagNames) {
+        if (parsed.flags.has(flagName)) {
+          value = parsed.flags.get(flagName);
+          break;
         }
       }
     }
@@ -524,10 +570,29 @@ export function resolveArgs(params: ParamMeta[], parsed: ParsedArgs): unknown[] 
 
     // Coerce and add to result
     // Boolean flags that are already boolean don't need coercion
+    let coerced: unknown;
     if (typeof value === "boolean" && param.type === "boolean") {
-      result.push(value);
+      coerced = value;
     } else {
-      result.push(coerceArg(String(value), param.type));
+      coerced = coerceArg(String(value), param.type);
+    }
+
+    if (param.choices && !param.choices.includes(String(coerced))) {
+      throw new Error(
+        `Invalid value for <${param.name}>: "${coerced}" (expected one of: ${param.choices.join(", ")})`,
+      );
+    }
+
+    result.push(coerced);
+  }
+
+  // Positional args left unclaimed by any parameter are an error too
+  if (!hasRest) {
+    const extra = parsed.positional.filter((_, i) => !usedPositional.has(i));
+    if (extra.length > 0) {
+      throw new Error(
+        `Unexpected argument${extra.length > 1 ? "s" : ""}: ${extra.join(" ")}`,
+      );
     }
   }
 
@@ -558,20 +623,35 @@ export function formatFlagInfo(param: ParamMeta): string {
 
 // Display task listing (used by both help and --list)
 export function printTaskList(discovered: DiscoveredTasks): void {
-  for (const [name, meta] of discovered.root) {
+  const signatureFor = (prefix: string, name: string, meta: TaskMeta) => {
     const paramStr = meta.params.map(formatParam).join(" ");
-    const signature = paramStr ? `${name} ${paramStr}` : name;
-    console.log(`  ${signature}`);
+    const full = prefix ? `${prefix}:${name}` : name;
+    return paramStr ? `${full} ${paramStr}` : full;
+  };
+
+  // Collect every row first so descriptions align across the whole listing
+  const rootRows: Array<[string, string]> = [];
+  for (const [name, meta] of discovered.root) {
+    rootRows.push([signatureFor("", name, meta), meta.description]);
   }
+  const nsRows = new Map<string, Array<[string, string]>>();
   for (const [ns, methods] of discovered.namespaced) {
-    console.log(`\n${ns}:`);
+    const rows: Array<[string, string]> = [];
     for (const [name, meta] of methods) {
-      const paramStr = meta.params.map(formatParam).join(" ");
-      const signature = paramStr
-        ? `${ns}:${name} ${paramStr}`
-        : `${ns}:${name}`;
-      console.log(`  ${signature}`);
+      rows.push([signatureFor(ns, name, meta), meta.description]);
     }
+    nsRows.set(ns, rows);
+  }
+
+  const allRows = [...rootRows, ...[...nsRows.values()].flat()];
+  const width = Math.max(0, ...allRows.map(([sig]) => sig.length));
+  const printRow = ([sig, desc]: [string, string]) =>
+    console.log(desc ? `  ${sig.padEnd(width)}  ${desc}` : `  ${sig}`);
+
+  rootRows.forEach(printRow);
+  for (const [ns, rows] of nsRows) {
+    console.log(`\n${ns}:`);
+    rows.forEach(printRow);
   }
 }
 
@@ -590,7 +670,11 @@ export function showTaskHelp(command: string, meta: TaskMeta): void {
     console.log("Arguments:");
     for (const param of meta.params) {
       const reqStr = param.required ? "(required)" : "(optional)";
-      const typeStr = param.isRest ? `${param.type}...` : param.type;
+      const typeStr = param.isRest
+        ? `${param.type}...`
+        : param.choices
+          ? param.choices.join("|")
+          : param.type;
       const flagStr = formatFlagInfo(param);
       const flagDisplay = flagStr ? `  ${flagStr}` : "";
       console.log(

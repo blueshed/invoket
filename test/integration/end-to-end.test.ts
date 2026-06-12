@@ -78,12 +78,26 @@ describe("End-to-End CLI Tests", () => {
       expect(claude).toContain("invoket");
     });
 
-    test("should skip CLAUDE.md if invoket section already present", async () => {
-      writeFileSync(join(TEST_DIR, "CLAUDE.md"), "# CLAUDE.md\ninvoket tasks\n");
+    test("should skip CLAUDE.md if invoket guide already present", async () => {
+      const guide = await Bun.file(
+        join(import.meta.dir, "../../CLAUDE.md"),
+      ).text();
+      writeFileSync(join(TEST_DIR, "CLAUDE.md"), guide);
 
       const result = await runCLI("--init");
       expect(result.code).toBe(0);
       expect(result.stdout).toContain("already has invoket section");
+    });
+
+    test("should append guide when CLAUDE.md merely mentions invoket", async () => {
+      writeFileSync(
+        join(TEST_DIR, "CLAUDE.md"),
+        "# Notes\nWe use invoket here.\n",
+      );
+
+      const result = await runCLI("--init");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("Appended invoket guide");
     });
   });
 
@@ -476,8 +490,58 @@ export class Tasks {
       // Don't create tasks.ts
       const result = await runCLI("build");
       expect(result.code).toBe(1);
-      expect(result.stdout).toContain("No tasks.ts found");
-      expect(result.stdout).toContain("--init");
+      expect(result.stderr).toContain("No tasks.ts found");
+      expect(result.stderr).toContain("--init");
+    });
+
+    test("should show a failed command's stderr", async () => {
+      writeTasks(`
+export class Tasks {
+  /** Fail loudly */
+  async fail(c: Context) {
+    await c.run("ls /definitely-not-here-12345");
+  }
+}
+`);
+
+      const result = await runCLI("fail");
+      expect(result.code).toBe(1);
+      // The command's own diagnostic must reach the user, not just the exit code
+      expect(result.stderr).toContain("definitely-not-here-12345");
+      expect(result.stderr).toContain("No such file");
+    });
+
+    test("should include hidden stderr in the thrown error message", async () => {
+      writeTasks(`
+export class Tasks {
+  /** Fail with hidden output */
+  async fail(c: Context) {
+    await c.run("echo 'secret diagnostic' >&2; exit 3", { hide: true });
+  }
+}
+`);
+
+      const result = await runCLI("fail");
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("exit code 3");
+      expect(result.stderr).toContain("secret diagnostic");
+    });
+
+    test("should show a stack trace for bugs in the task itself", async () => {
+      writeTasks(`
+export class Tasks {
+  /** Buggy task */
+  async boom(c: Context) {
+    const x: any = undefined;
+    x.someMethod();
+  }
+}
+`);
+
+      const result = await runCLI("boom");
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Error running");
+      expect(result.stderr).toContain("at ");
     });
 
     test("should handle invalid tasks.ts syntax", async () => {
@@ -498,6 +562,55 @@ export class Tasks {
 
       const result = await runCLI("build");
       expect(result.code).toBe(1);
+    });
+  });
+
+  describe("Tasks file lookup", () => {
+    test("should find tasks.ts from a subdirectory", async () => {
+      writeTasks(`
+export class Tasks {
+  /** Where am I */
+  async where(c: Context) {
+    const { stdout } = await c.run("pwd", { hide: true });
+    console.log(\`cwd=\${stdout.trim()}\`);
+  }
+}
+`);
+      const subdir = join(TEST_DIR, "deeply", "nested");
+      mkdirSync(subdir, { recursive: true });
+
+      const result = await $`bun ${CLI_PATH} where`
+        .cwd(subdir)
+        .quiet()
+        .nothrow();
+      expect(result.exitCode).toBe(0);
+      // Commands run relative to tasks.ts, not the invocation directory
+      expect(result.stdout.toString()).toContain(`cwd=${TEST_DIR}`);
+    });
+  });
+
+  describe("String-Literal Union Choices", () => {
+    test("should accept a valid choice and reject an invalid one", async () => {
+      writeTasks(`
+export class Tasks {
+  /** Deploy to an environment */
+  async deploy(c: Context, env: "dev" | "prod", force: boolean = false) {
+    console.log(\`deploying to \${env} force=\${force}\`);
+  }
+}
+`);
+
+      const ok = await runCLI("deploy", "prod");
+      expect(ok.code).toBe(0);
+      expect(ok.stdout).toContain("deploying to prod");
+
+      const bad = await runCLI("deploy", "staging");
+      expect(bad.code).toBe(1);
+      expect(bad.stderr).toContain("expected one of: dev, prod");
+
+      const help = await runCLI("deploy", "-h");
+      expect(help.code).toBe(0);
+      expect(help.stdout).toContain("dev|prod");
     });
   });
 

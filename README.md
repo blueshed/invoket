@@ -25,6 +25,14 @@ You could. But then you write arg parsing, help text, and error handling every t
 
 One script solves one problem. A `tasks.ts` file is a project's command centre.
 
+## Do you need invoket?
+
+Maybe not. invoket's pitch — write a method, get arg parsing, help, and error handling for free — amortizes *authoring* effort. If an AI agent writes your commands, authoring is already free, and a bespoke `cli.ts` beside the code it operates on works just as well.
+
+What every project still needs is an **inventory**: one well-known place where commands live, so the next session — human or agent — finds the existing command instead of writing a duplicate. invoket provides that, but so does a cheaper convention: `package.json` scripts, a justfile, or a paragraph in CLAUDE.md saying "commands live as `cli.ts` beside the code they operate on; check for an existing one before writing a new one".
+
+invoket earns its keep when a human runs operational commands often enough to want one consistent grammar (`invt db:migrate up`) and a single `--help` that lists everything. If that's not you, a documented convention is enough.
+
 ## Installation
 
 ```bash
@@ -125,6 +133,7 @@ invt db.seed          # dot separator also works
 | `name: string = "default"` | `[name]` (optional) | `hello` |
 | `count: number` | `<count>` | `42` |
 | `force: boolean` | `<force>` | `true`, `1`, `false`, `0` |
+| `env: "dev" \| "prod"` | `<env>` (validated choice) | `dev` |
 | `params: SomeInterface` | `<params>` | `'{"key": "value"}'` |
 | `items: string[]` | `<items>` | `'["a", "b"]'` |
 | `...args: string[]` | `[args...]` (variadic) | `a b c` |
@@ -153,6 +162,8 @@ invt install -- --not-a-flag           # -- stops flag parsing
 
 Flags and positional args can be freely mixed in any order.
 
+Arguments are strict: an unknown flag or an extra positional argument is an error, not silently ignored — a typo'd `--cuont 3` fails loudly instead of running with the wrong count. Negative numbers are treated as values, so `--count -3` works.
+
 ### CLI Flags
 
 | Flag | Description |
@@ -162,6 +173,10 @@ Flags and positional args can be freely mixed in any order.
 | `-l`, `--list` | List tasks |
 | `--version` | Show version |
 | `--init` | Scaffold `tasks.ts` and `CLAUDE.md` |
+
+## Finding tasks.ts
+
+`invt` looks for `tasks.ts` in the current directory, then walks up parent directories until it finds one (like `make` or `just`). Commands run relative to the directory containing `tasks.ts`, so `invt build` behaves the same from anywhere in the project.
 
 ## Context API
 
@@ -206,6 +221,15 @@ interface RunResult {
 }
 ```
 
+### Quoting
+
+Commands run via `sh -c`, and interpolated values are **not** escaped. Wrap values that may contain spaces or shell characters in single quotes, escaping any embedded single quotes:
+
+```typescript
+const safe = message.replace(/'/g, `'\\''`);
+await c.run(`git commit -m '${safe}'`);
+```
+
 ### Error Handling
 
 Failed commands throw `CommandError`:
@@ -224,6 +248,8 @@ try {
 ```
 
 Use `{ warn: true }` to suppress throws and inspect the result instead.
+
+A failing command's output is always printed before the throw, so errors are never silent. With `{ hide: true }` the captured stderr is folded into the `CommandError` message instead.
 
 ## Private Methods
 
@@ -262,7 +288,8 @@ async setup(c: Context) {
 async ship(c: Context, message: string) {
   const { stdout } = await c.run("git branch --show-current", { hide: true });
   await c.run("git add -A");
-  await c.run(`git commit -m "${message}"`);
+  const safe = message.replace(/'/g, `'\\''`);
+  await c.run(`git commit -m '${safe}'`);
   await c.run(`git push -u origin ${stdout.trim()}`);
 }
 ```

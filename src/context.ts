@@ -79,17 +79,20 @@ export class Context {
       failed: result.exitCode !== 0,
     };
 
-    if (!opts.warn && runResult.failed) {
-      throw new CommandError(
-        `Command failed with exit code ${runResult.code}: ${command}`,
-        runResult,
-      );
-    }
-
-    // When streaming, output already went to terminal; otherwise write captured output
+    // When streaming, output already went to terminal; otherwise write captured
+    // output — before any throw, so a failing command's stderr is never silent
     if (!opts.stream && !opts.hide) {
       if (runResult.stdout) process.stdout.write(runResult.stdout);
       if (runResult.stderr) process.stderr.write(runResult.stderr);
+    }
+
+    if (!opts.warn && runResult.failed) {
+      let message = `Command failed with exit code ${runResult.code}: ${command}`;
+      // With hide the output wasn't printed, so surface stderr in the error
+      if (opts.hide && runResult.stderr.trim()) {
+        message += `\n${runResult.stderr.trim()}`;
+      }
+      throw new CommandError(message, runResult);
     }
 
     return runResult;

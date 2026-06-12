@@ -966,6 +966,40 @@ describe("parseParams", () => {
     expect(params[1].required).toBe(false);
     expect(params[2].required).toBe(false);
   });
+
+  test("parses string-literal union as string with choices", () => {
+    const params = parseParams('env: "dev" | "prod"', "Deploy");
+    expect(params[0]).toMatchObject({
+      name: "env",
+      type: "string",
+      required: true,
+      choices: ["dev", "prod"],
+    });
+  });
+
+  test("parses single-quoted literal union", () => {
+    const params = parseParams("env: 'dev' | 'prod'", "Deploy");
+    expect(params[0].choices).toEqual(["dev", "prod"]);
+  });
+
+  test("literal union with default is optional", () => {
+    const params = parseParams('env: "dev" | "prod" = "dev"', "Deploy");
+    expect(params[0]).toMatchObject({
+      type: "string",
+      required: false,
+      choices: ["dev", "prod"],
+    });
+  });
+
+  test("literal union followed by other params", () => {
+    const params = parseParams(
+      'env: "dev" | "prod", force: boolean = false',
+      "Deploy",
+    );
+    expect(params).toHaveLength(2);
+    expect(params[0].choices).toEqual(["dev", "prod"]);
+    expect(params[1]).toMatchObject({ name: "force", type: "boolean" });
+  });
 });
 
 describe("resolveArgs", () => {
@@ -1061,14 +1095,16 @@ describe("resolveArgs", () => {
     expect(result).toEqual(["World", 3]);
   });
 
-  test("flags take precedence over positional", () => {
+  test("rejects supplying the same param as both flag and positional", () => {
     const params = makeParams([{ name: "name", type: "string" }]);
     const parsed = {
       positional: ["Positional"],
       flags: new Map<string, string | boolean>([["name", "FromFlag"]]),
     };
-    const result = resolveArgs(params, parsed);
-    expect(result).toEqual(["FromFlag"]);
+    // Flag wins the param slot, leaving the positional unclaimed — that's an error
+    expect(() => resolveArgs(params, parsed)).toThrow(
+      "Unexpected argument: Positional",
+    );
   });
 
   test("handles boolean flags as true", () => {
@@ -1229,6 +1265,77 @@ describe("resolveArgs", () => {
     const result = resolveArgs(params, parsed);
     expect(result).toEqual(["World", true, 3]);
   });
+
+  test("throws on unknown flag", () => {
+    const params = makeParams([
+      { name: "name", type: "string" },
+      { name: "count", type: "number", required: false },
+    ]);
+    const parsed = {
+      positional: ["World"],
+      flags: new Map<string, string | boolean>([["cuont", "3"]]),
+    };
+    expect(() => resolveArgs(params, parsed)).toThrow(
+      "Unknown flag: --cuont. Valid flags: --name, --count",
+    );
+  });
+
+  test("formats single-char unknown flag with one dash", () => {
+    const params = makeParams([{ name: "name", type: "string" }]);
+    const parsed = {
+      positional: ["World"],
+      flags: new Map<string, string | boolean>([["x", true]]),
+    };
+    expect(() => resolveArgs(params, parsed)).toThrow("Unknown flag: -x");
+  });
+
+  test("does not report duplicate long/short spellings as unknown", () => {
+    const params = makeParams([{ name: "name", type: "string", short: "-n" }]);
+    const parsed = {
+      positional: [],
+      flags: new Map<string, string | boolean>([
+        ["name", "Long"],
+        ["n", "Short"],
+      ]),
+    };
+    // Long flag wins, short spelling is consumed silently
+    expect(resolveArgs(params, parsed)).toEqual(["Long"]);
+  });
+
+  test("throws on extra positional args when no rest param", () => {
+    const params = makeParams([{ name: "name", type: "string" }]);
+    const parsed = { positional: ["World", "extra"], flags: new Map() };
+    expect(() => resolveArgs(params, parsed)).toThrow(
+      "Unexpected argument: extra",
+    );
+  });
+
+  test("rest param still collects extra positionals", () => {
+    const params: ParamMeta[] = [
+      { name: "packages", type: "array", required: false, isRest: true },
+    ];
+    const parsed = { positional: ["a", "b", "c"], flags: new Map() };
+    expect(resolveArgs(params, parsed)).toEqual(["a", "b", "c"]);
+  });
+
+  test("validates value against choices", () => {
+    const params: ParamMeta[] = [
+      {
+        name: "env",
+        type: "string",
+        required: true,
+        isRest: false,
+        flag: { long: "--env" },
+        choices: ["dev", "prod"],
+      },
+    ];
+    expect(
+      resolveArgs(params, { positional: ["prod"], flags: new Map() }),
+    ).toEqual(["prod"]);
+    expect(() =>
+      resolveArgs(params, { positional: ["staging"], flags: new Map() }),
+    ).toThrow('Invalid value for <env>: "staging" (expected one of: dev, prod)');
+  });
 });
 
 describe("parseCliArgs", () => {
@@ -1352,12 +1459,20 @@ describe("parseCliArgs", () => {
     expect(result.flags.size).toBe(0);
   });
 
-  test("handles boolean flag before a flag-like negative number", () => {
-    const result = parseCliArgs(["--verbose", "-1"]);
-    // -1 looks like a flag, so --verbose is boolean true
-    expect(result.flags.get("verbose")).toBe(true);
-    // -1 is length 2 so it's parsed as short flag "1" = true
-    expect(result.flags.get("1")).toBe(true);
+  test("uses negative number as flag value", () => {
+    const result = parseCliArgs(["--count", "-3"]);
+    expect(result.flags.get("count")).toBe("-3");
+  });
+
+  test("uses negative float as short flag value", () => {
+    const result = parseCliArgs(["-c", "-0.5"]);
+    expect(result.flags.get("c")).toBe("-0.5");
+  });
+
+  test("treats bare negative number as positional", () => {
+    const result = parseCliArgs(["-1"]);
+    expect(result.positional).toEqual(["-1"]);
+    expect(result.flags.size).toBe(0);
   });
 
   test("handles --no- prefix with equals syntax", () => {
@@ -1683,5 +1798,34 @@ describe("CLI flag integration", () => {
     const out = result.stdout.toString();
     expect(out).toContain("-n");
     expect(out).toContain("-c");
+  });
+
+  test("rejects unknown flags instead of silently ignoring them", async () => {
+    const result = await run("hello", "World", "--cuont", "3");
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("Unknown flag: --cuont");
+  });
+
+  test("rejects extra positional args", async () => {
+    const result = await run("hello", "World", "2", "extra");
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr.toString()).toContain("Unexpected argument: extra");
+  });
+
+  test("passes -h through to task args after --", async () => {
+    const result = await run("install", "--", "-h");
+    expect(result.exitCode).toBe(0);
+    const out = result.stdout.toString();
+    expect(out).toContain("Installing 1 packages");
+    expect(out).toContain("-h");
+    expect(out).not.toContain("Usage:");
+  });
+
+  test("shows task descriptions in help listing", async () => {
+    const result = await run("--help");
+    expect(result.exitCode).toBe(0);
+    const out = result.stdout.toString();
+    expect(out).toContain("Say hello with a name and repeat count");
+    expect(out).toContain("Run database migrations");
   });
 });

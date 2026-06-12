@@ -19,7 +19,7 @@ export class Tasks {
 
 ## Types → CLI
 
-`string` as-is, `number` rejects NaN, `boolean` accepts `true/false/1/0/--flag/--no-flag`, `Interface` and `Record` expect JSON string, `type[]` expects JSON array, `...args: string[]` collects remaining, `= default` and `| null` make optional.
+`string` as-is, `number` rejects NaN, `boolean` accepts `true/false/1/0/--flag/--no-flag`, `"a" | "b"` validates against the listed choices, `Interface` and `Record` expect JSON string, `type[]` expects JSON array, `...args: string[]` collects remaining, `= default` and `| null` make optional.
 
 ## Flags
 
@@ -29,6 +29,8 @@ Auto: `--paramName`. For short flags add `@flag` in JSDoc:
 /** @flag env -e --environment */
 async deploy(c: Context, env: string) {}
 ```
+
+Unknown flags and extra positional args are errors. Negative numbers work as flag values (`--count -3`). Use `--` to pass remaining args literally (including `-h`).
 
 ## Namespaces
 
@@ -54,4 +56,8 @@ await c.sudo(cmd);                       // sudo prefix
 for await (const _ of c.cd(dir)) { }    // temp cd
 ```
 
-Result: `{ stdout, stderr, code, ok, failed }`. Failure throws `CommandError` with `.result`.
+Result: `{ stdout, stderr, code, ok, failed }`. Failure throws `CommandError` with `.result`; the command's output is printed before the throw (with `hide`, stderr is folded into the error message).
+
+Commands run via `sh -c` and interpolations are not escaped — single-quote values that may contain spaces or shell characters: `` c.run(`git commit -m '${msg.replace(/'/g, `'\\''`)}'`) ``.
+
+`invt` finds `tasks.ts` in the current directory or any parent, and runs commands relative to where `tasks.ts` lives.
