@@ -375,7 +375,11 @@ cd "${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}" || exit 0
 exec bun node_modules/invoket/src/cli.ts session:start
 ```
 
-`bunx create-blueshed my-app` scaffolds a Bun project with all of this wired — delta + railroad + invoket, skills sync, hook, seeded memory (see `packages/create-blueshed`). Prefer your own schema? The hand-rolled version of the same pattern:
+`bunx create-blueshed my-app` scaffolds a Bun project with all of this wired — delta + railroad + invoket, skills sync, hook, seeded memory (see `packages/create-blueshed`).
+
+**Scope: memory belongs to applications.** Library packages stay atomic — their agent interface is the skills they ship, versioned with the code. Tools carry their own process (their feedback loop *is* the memory). Only an application accumulates project-specific facts and decisions worth a store; that's where `Ctx` and the SessionStart hook go.
+
+Prefer your own schema? The hand-rolled version of the same pattern:
 
 ### Project context — a SQLite-backed knowledge base
 

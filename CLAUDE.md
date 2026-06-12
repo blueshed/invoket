@@ -73,3 +73,5 @@ export class Tasks {
 ```
 
 `.ctx.jsonl` is committed truth; `.ctx.db` is a rebuildable cache (gitignore it). Record facts (`ctx:set key value...`) and decisions (`ctx:decide subject decision rationale...`) as you work.
+
+Memory is for **application projects only**. Library and tool repos stay atomic — their agent interface is the skills they ship, not a memory store. Don't retrofit `Ctx`/`Session` hooks into a library repo.
