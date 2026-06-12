@@ -61,3 +61,15 @@ Result: `{ stdout, stderr, code, ok, failed }`. Failure throws `CommandError` wi
 Commands run via `sh -c` and interpolations are not escaped — single-quote values that may contain spaces or shell characters: `` c.run(`git commit -m '${msg.replace(/'/g, `'\\''`)}'`) ``.
 
 `invt` finds `tasks.ts` in the current directory or any parent, and runs commands relative to where `tasks.ts` lives.
+
+## Agent batteries
+
+```typescript
+import { Ctx, Session } from "invoket/agent";
+export class Tasks {
+  ctx = new Ctx();        // invt ctx:set/get/search/decide/decisions/dump — project memory
+  session = new Session(); // invt session:start — SessionStart hook body (skills sync + memory inject)
+}
+```
+
+`.ctx.jsonl` is committed truth; `.ctx.db` is a rebuildable cache (gitignore it). Record facts (`ctx:set key value...`) and decisions (`ctx:decide subject decision rationale...`) as you work.

@@ -340,6 +340,43 @@ AI agents like Claude Code have built-in tools for searching files, reading code
 
 invoket lets you build a **structured, queryable project knowledge base** that agents can read and write through the same CLI interface humans use. Bun's built-in SQLite makes this trivial — no external database, no setup, just a `.ctx.db` file that travels with the project.
 
+### Batteries included — `invoket/agent`
+
+The pattern below ships ready-made. Two lines in `tasks.ts`:
+
+```typescript
+import { Ctx, Session } from "invoket/agent";
+
+export class Tasks {
+  ctx = new Ctx();        // invt ctx:set / get / search / decide / decisions / dump
+  session = new Session(); // invt session:start / skills
+}
+```
+
+`Ctx` stores facts and decisions in `.ctx.db` (a rebuildable cache — gitignore it) and `.ctx.jsonl` (the committed source of truth — diffable, merge-friendly; a fresh clone or a pulled change is replayed automatically). `Session.start` is built to be a Claude Code **SessionStart hook** body: it syncs `.claude/skills/` from any dependency that ships skills, rebuilds the cache, and prints a bounded context payload to stdout — which the hook injects into the model's context on startup, resume, `/clear`, and compaction:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [{ "type": "command", "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh" }]
+      }
+    ]
+  }
+}
+```
+
+```sh
+#!/bin/sh
+cd "${CLAUDE_PROJECT_DIR:-$(dirname "$0")/../..}" || exit 0
+[ -d node_modules ] || bun install >/dev/null 2>&1 || true
+exec bun node_modules/invoket/src/cli.ts session:start
+```
+
+`bunx create-blueshed my-app` scaffolds a Bun project with all of this wired — delta + railroad + invoket, skills sync, hook, seeded memory (see `packages/create-blueshed`). Prefer your own schema? The hand-rolled version of the same pattern:
+
 ### Project context — a SQLite-backed knowledge base
 
 ```typescript
