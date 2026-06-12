@@ -1,6 +1,7 @@
 name: Publish create-blueshed to npm
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "create-blueshed-v*"
