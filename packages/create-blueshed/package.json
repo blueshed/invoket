@@ -1,6 +1,6 @@
 {
   "name": "create-blueshed",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Scaffold a Bun project on the blueshed stack (delta + railroad + invoket), wired for agent sessions",
   "bin": {
