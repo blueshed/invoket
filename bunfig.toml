@@ -1,4 +1,3 @@
-# Scope test discovery to invoket's own suite — packages/create-blueshed/templates
-# ships a test file for scaffolded projects that must not run here.
+# Scope test discovery to invoket's own suite.
 [test]
 root = "test"

@@ -26,11 +26,15 @@ jobs:
 
       - run: bun test
 
-      # Smoke: scaffold into a temp dir and check the tree materializes
+      # Smoke: make an app the way a user does, from the paintbrush template on GitHub,
+      # and check it is paintbrush's and typechecks
       - run: |
-          bun packages/create-blueshed/cli.ts /tmp/smoke-app --name smoke-app
-          test -f /tmp/smoke-app/.claude/hooks/session-start.sh
-          test -f /tmp/smoke-app/.ctx.jsonl
+          bun packages/create-blueshed/cli.ts /tmp/smoke-app
+          test -f /tmp/smoke-app/src/server.ts
+          test -f /tmp/smoke-app/.claude/skills/evolve/SKILL.md
+          cd /tmp/smoke-app && bun run typecheck
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Skip if this version is already on npm
         id: check

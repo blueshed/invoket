@@ -1,24 +1,22 @@
 {
   "name": "create-blueshed",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Scaffold a Bun project on the blueshed stack (delta + railroad + invoket), wired for agent sessions",
+  "description": "Start a Bun website from paintbrush: routes and resources, railroad for the page, Railway for the deploy",
   "bin": {
     "create-blueshed": "./cli.ts"
   },
   "files": [
     "cli.ts",
-    "templates",
     "README.md"
   ],
   "keywords": [
     "create",
-    "scaffold",
+    "starter",
     "bun",
-    "delta",
     "railroad",
-    "invoket",
-    "claude"
+    "railway",
+    "paintbrush"
   ],
   "repository": {
     "type": "git",
@@ -27,6 +25,6 @@
   },
   "license": "MIT",
   "engines": {
-    "bun": ">=1.0.0"
+    "bun": ">=1.4.0"
   }
 }

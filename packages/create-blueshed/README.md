@@ -1,28 +1,18 @@
 # create-blueshed
 
-Scaffold a Bun project on the blueshed stack — **@blueshed/delta** (realtime doc sync), **@blueshed/railroad** (signals + real-DOM JSX), **invoket** (typed task CLI) — pre-wired for agent sessions.
+Start a Bun website from [paintbrush](https://github.com/blueshed/paintbrush): routes and resources, [railroad](https://github.com/blueshed/railroad) for the page, Railway for the deploy, and a resource that can evolve from an HTTP route to a WebSocket and a [delta](https://github.com/blueshed/delta) document.
 
 ```sh
 bunx create-blueshed my-app
-# or: npm create blueshed@latest my-app
-cd my-app && bun install && bun dev
+# or: bun create blueshed my-app
+cd my-app
+bun dev
 ```
 
-## What you get
+Needs Bun 1.4 or later.
 
-- A running realtime app: `server.ts` (delta JSON-file backend), `src/app.tsx` (railroad UI), one shared doc that syncs across browser windows.
-- `tasks.ts` with `ctx` (SQLite-backed project memory), `session` (session bring-up), and `check` (typecheck + tests) — all via `invt`.
-- **Agent wiring**: a Claude Code SessionStart hook runs `invt session:start`, which syncs `.claude/skills/` from any dependency that ships skills (delta and railroad do), rebuilds project memory from the committed `.ctx.jsonl`, and injects facts + decisions into model context — on startup, resume, `/clear`, and compaction.
-- `.mcp.json` wiring for [hjeli](https://github.com/blueshed/hjeli)'s MCP server, when the `hjeli` binary is on your PATH at scaffold time.
+This package is only the way in. It runs `bun create blueshed/paintbrush` with the arguments you give it, so the template, its tests and its documentation are in the [paintbrush](https://github.com/blueshed/paintbrush) repository, and `bun create blueshed/paintbrush my-app` does the same thing directly.
 
-The hook is a thin shim; the logic lives in `invoket/agent` and upgrades with the package, not the scaffold.
+## From 0.3.0
 
-## Project memory
-
-`.ctx.jsonl` (committed, diffable) is the source of truth; `.ctx.db` (gitignored) is a rebuildable SQLite cache. Agents and humans append through the same CLI:
-
-```sh
-invt ctx:set db "Postgres 16 on :5432"
-invt ctx:decide auth "JWT in httpOnly cookies" "XSS protection"
-invt ctx:dump
-```
+Earlier versions scaffolded a delta and railroad app with invoket tasks and project memory. 0.3.0 replaces that with paintbrush. If you want the old scaffold, use `create-blueshed@0.2.0`.
