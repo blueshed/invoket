@@ -32,7 +32,7 @@ jobs:
           bun packages/create-blueshed/cli.ts /tmp/smoke-app
           test -f /tmp/smoke-app/src/server.ts
           test -f /tmp/smoke-app/.claude/skills/evolve/SKILL.md
-          cd /tmp/smoke-app && bun run typecheck
+          cd /tmp/smoke-app && bun check
         env:
           GITHUB_TOKEN: ${{ github.token }}
 

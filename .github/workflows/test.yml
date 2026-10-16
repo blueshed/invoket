@@ -18,4 +18,6 @@ jobs:
 
       - run: bun install
 
+      - run: bun check
+
       - run: bun test
